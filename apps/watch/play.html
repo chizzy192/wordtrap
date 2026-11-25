@@ -29,7 +29,19 @@ body { margin:0; color:var(--text); background:var(--board); background-image:ra
 header { display:flex; align-items:center; gap:14px; padding:22px 0 10px; flex-wrap:wrap; }
 .wordmark { font:800 30px/1 var(--cond); letter-spacing:-.5px; } .wordmark b { color:var(--red); }
 .meta { color:var(--soft); }
-#themeBtn { margin-left:auto; width:44px; height:44px; border-radius:50%; border:3px solid var(--line); background:var(--board); color:var(--text); cursor:pointer; display:grid; place-items:center; padding:0; }
+#themeBtn { width:44px; height:44px; border-radius:50%; border:3px solid var(--line); background:var(--board); color:var(--text); cursor:pointer; display:grid; place-items:center; padding:0; }
+.account { margin-left:auto; display:flex; align-items:center; gap:10px; }
+.account .who { font-weight:600; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.account .bal { font:800 22px/1 var(--cond); font-variant-numeric:tabular-nums; }
+.account .bal small { display:block; font:500 11px/1 var(--sans); color:var(--soft); margin-top:2px; }
+.btn.small { font-size:13px; padding:7px 12px; box-shadow:3px 3px 0 var(--hard); }
+.btn.yellow { background:var(--yellow); color:#14121A; } .btn.blue { background:var(--blue); color:#FFFFFF; }
+.btn.wide { display:block; width:100%; margin-top:8px; } .btn.text { background:none; border:0; box-shadow:none; color:var(--blue-text); text-decoration:underline; padding:6px 2px; }
+.popover { position:fixed; top:84px; right:24px; z-index:40; width:min(340px, calc(100vw - 32px)); background:var(--sheet); color:var(--text); border:3px solid var(--line); box-shadow:8px 8px 0 var(--hard); padding:16px 18px 14px; }
+.popover[hidden] { display:none; } .popover h2 { margin:0 0 10px; }
+.popover .help { color:var(--soft); font-size:13px; margin:6px 0 4px; } .popover .help.err { color:var(--red-text); font-weight:600; min-height:1.2em; }
+.popover input { font:500 15px var(--sans); background:var(--sheet); color:var(--text); border:3px solid var(--line); padding:8px 10px; width:100%; }
+.popover .balance b { font:800 24px/1 var(--cond); margin-left:6px; } .popover .balance small { color:var(--soft); margin-left:6px; }
 #themeBtn svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2.5; }
 :root[data-theme="dark"] #themeBtn .moon, :root[data-theme="light"] #themeBtn .sun { display:none; }
 h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
@@ -73,6 +85,7 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
 <header>
   <div class="wordmark">Word<b>Trap</b></div>
   <span class="meta">Byte plays, you plant mines</span>
+  <div class="account" id="account"><button type="button" class="btn small" id="signInBtn">Sign in</button></div>
   <button id="themeBtn" type="button" aria-pressed="false" aria-label="Switch to dark theme" title="Switch theme">
     <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3a9 9 0 1 0 6 15.5A8 8 0 0 1 15 3z"/></svg>
     <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
@@ -97,6 +110,29 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
   <button class="btn" type="submit">Join room</button>
 </form>
 <div class="msg" id="codeMsg" aria-live="polite"></div>
+</div>
+
+<div class="popover" id="firstVisit" role="dialog" aria-labelledby="fvTitle" hidden>
+  <h2 id="fvTitle">Play or just watch</h2>
+  <button type="button" class="btn blue wide" id="googleBtn">Sign in with Google</button>
+  <div class="help" id="googleHelp"></div>
+  <button type="button" class="btn wide" id="guestBtn">Play as guest</button>
+  <div class="help">Guests play with test funds.</div>
+  <button type="button" class="btn text" id="justWatch">Just watch</button>
+</div>
+<div class="popover" id="namePrompt" role="dialog" aria-labelledby="npTitle" hidden>
+  <h2 id="npTitle">What should we call you?</h2>
+  <input id="nameInput" maxlength="16" autocomplete="nickname" placeholder="2 to 16 characters" aria-label="Display name" />
+  <div class="help">Letters, numbers, spaces and underscores. Shown on your seat and your mines.</div>
+  <div class="row"><button type="button" class="btn" id="nameSave">Save</button><button type="button" class="btn text" id="nameLater">Later</button></div>
+  <div class="help err" id="nameMsg" aria-live="polite"></div>
+</div>
+<div class="popover" id="fundsPanel" role="dialog" aria-labelledby="fpTitle" hidden>
+  <h2 id="fpTitle">Add funds</h2>
+  <div class="balance">Balance <b id="fpBalance">$0.00</b> <small id="fpKind">Test funds</small></div>
+  <div id="fundsBody"></div>
+  <div class="help" id="fundsMsg" aria-live="polite"></div>
+  <button type="button" class="btn text" id="fundsClose">Close</button>
 </div>
 
 <script type="module">
@@ -168,6 +204,41 @@ $("codeForm").onsubmit = async (e) => {
     go(code);
   } catch { $("codeMsg").className = "msg err"; $("codeMsg").textContent = "The server didn't answer. Try again in a moment."; }
 };
+
+// ---- account area (shared identity module) ----
+const { identity, validName } = await import("/identity.js");
+let treasury = null, balanceMicro = null;
+const usd = (n) => "$" + Number(n || 0).toFixed(2);
+const popovers = ["firstVisit", "namePrompt", "fundsPanel"];
+const closePopovers = () => popovers.forEach((id) => { $(id).hidden = true; });
+function renderAccount() {
+  const a = $("account");
+  if (!identity.id) { a.innerHTML = `<button type="button" class="btn small" id="signInBtn">Sign in</button>`; return; }
+  a.innerHTML = `<span class="who" title="${esc(identity.id)}">${esc(identity.label(identity.id))}</span><span class="bal">${usd((balanceMicro ?? 0) / 1e6)}<small>${treasury?.mode === "pollar" && identity.mode === "wallet" ? "Pollar wallet" : "Test funds"}</small></span><button type="button" class="btn small yellow" id="addFundsBtn">Add funds</button>`;
+}
+async function refreshBalance() { const b = await identity.balance().catch(() => null); if (b) { balanceMicro = b.balanceMicro; renderAccount(); } }
+function openFunds() {
+  closePopovers(); $("fpBalance").textContent = usd((balanceMicro ?? 0) / 1e6); $("fpKind").textContent = treasury?.mode === "pollar" ? "Pollar wallet" : "Test funds";
+  $("fundsBody").innerHTML = treasury?.mode === "pollar" ? `<a class="btn blue wide" href="/stake/">Top up with Pollar</a>` : `<button type="button" class="btn yellow wide" id="addTestFunds">Add test funds</button><div class="help">Adds $10 of play money to your balance.</div>`;
+  $("fundsMsg").textContent = ""; $("fundsPanel").hidden = false;
+}
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("button, a"); if (!t) return;
+  if (t.id === "signInBtn") { closePopovers(); $("firstVisit").hidden = false; }
+  if (t.id === "addFundsBtn") openFunds();
+  if (t.id === "justWatch" || t.id === "fundsClose") closePopovers();
+  if (t.id === "guestBtn") { identity.choose("guest"); closePopovers(); await identity.fundGuestOnce(treasury?.guestStartFunds ?? 10); await refreshBalance(); if (!identity.name) { $("nameInput").value = ""; $("namePrompt").hidden = false; $("nameInput").focus(); } }
+  if (t.id === "googleBtn") { if (treasury?.mode === "pollar") location.href = `/stake/?return=${encodeURIComponent(location.pathname + location.search)}`; else $("googleHelp").textContent = "Google sign-in isn't set up on this server yet. Play as a guest for now."; }
+  if (t.id === "nameLater") closePopovers();
+  if (t.id === "nameSave") { const n = validName($("nameInput").value); if (!n) return ($("nameMsg").textContent = "Names are 2 to 16 characters: letters, numbers, spaces and underscores."); try { await identity.saveName(n); closePopovers(); renderAccount(); } catch (err) { $("nameMsg").textContent = err.message; } }
+  if (t.id === "addTestFunds") { try { const r = await identity.addTestFunds(10); balanceMicro = r.balanceMicro; $("fpBalance").textContent = usd(balanceMicro / 1e6); $("fundsMsg").textContent = "Added $10."; renderAccount(); setTimeout(closePopovers, 700); } catch (err) { $("fundsMsg").textContent = err.message; } }
+});
+(async () => {
+  treasury = await fetch("/api/v1/treasury").then((r) => r.json()).catch(() => null);
+  if (identity.id) { await identity.fetchProfile().catch(() => null); await refreshBalance(); }
+  renderAccount();
+  if (!identity.chosen) $("firstVisit").hidden = false;
+})();
 
 function syncThemeButton() {
   const dark = document.documentElement.getAttribute("data-theme") === "dark";

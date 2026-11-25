@@ -28,8 +28,17 @@ function loadSecrets(): Record<string, Secret> { try { return JSON.parse(localSt
 function saveSecrets(s: Record<string, Secret>) { try { localStorage.setItem(SECRETS_KEY, JSON.stringify(s)); } catch { /* private mode */ } }
 
 // ---- identity (I6): Pollar session in pollar mode, plain user / wallet address in demo mode ----
+// Guest identity shared with the plain pages (/identity.js): "guest-" + 8 random characters, made once.
+const ID_KEY = "wt.identity", MODE_KEY = "wt.identity.mode", NAME_KEY = "wt.profile.name", CHOICE_KEY = "wt.identity.choice";
+function newGuestId() { const a = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"; return "guest-" + [...crypto.getRandomValues(new Uint8Array(8))].map((x) => a[x % a.length]).join(""); }
+export const shortAddress = (id: string) => (!id ? "" : id.length <= 10 ? id : `${id.slice(0, 4)}…${id.slice(-4)}`);
+export function readIdentity() { try { return { id: localStorage.getItem(ID_KEY) ?? "", mode: localStorage.getItem(MODE_KEY) ?? "", name: localStorage.getItem(NAME_KEY) ?? "", chosen: !!localStorage.getItem(CHOICE_KEY) }; } catch { return { id: "", mode: "", name: "", chosen: false }; } }
+export function chooseGuest(): string { const cur = readIdentity(); const id = cur.mode === "guest" && cur.id ? cur.id : newGuestId(); try { localStorage.setItem(ID_KEY, id); localStorage.setItem(MODE_KEY, "guest"); localStorage.setItem(CHOICE_KEY, "1"); } catch { /* private */ } return id; }
+
 export function useIdentity(mode: Mode) {
-  const [user, setUser] = useState<string>(() => { try { return localStorage.getItem(USER_KEY) ?? ""; } catch { return ""; } });
+  const [user, setUser] = useState<string>(() => readIdentity().id);
+  const [displayName, setDisplayName] = useState<string>(() => readIdentity().name);
+  const label = displayName || shortAddress(user);
   const [token, setToken] = useState<string | null>(null);
   const [pollarErr, setPollarErr] = useState<string | null>(null);
   const [pollar, setPollar] = useState<any>(null);
@@ -57,7 +66,19 @@ export function useIdentity(mode: Mode) {
     })();
   }, [p?.isAuthenticated, p?.wallet?.address]);
 
-  const setDemoUser = (u: string) => { setUser(u); try { localStorage.setItem(USER_KEY, u); } catch { /* ignore */ } };
+  /** Demo mode: the identity is a guest id made once, never a typed handle. */
+  const setDemoUser = () => setUser(chooseGuest());
+  const saveName = async (name: string) => {
+    const r = await fetch(SERVER + "/api/v1/profile", { method: "PUT", headers: { "content-type": "application/json", ...(mode === "demo" ? { "x-user": user } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ name }) });
+    const p = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(p.error ?? "Could not save the name.");
+    setDisplayName(p.name); try { localStorage.setItem(NAME_KEY, p.name); } catch { /* private */ }
+    return p.name as string;
+  };
+  useEffect(() => {                                   // pick up a name saved on another page
+    if (!user) return;
+    fetch(SERVER + "/api/v1/profile", { headers: { ...(mode === "demo" ? { "x-user": user } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}) } }).then((r) => r.ok ? r.json() : null).then((p) => { if (p?.name) { setDisplayName(p.name); try { localStorage.setItem(NAME_KEY, p.name); } catch { /* private */ } } }).catch(() => {});
+  }, [user, token, mode]);
   const connectWallet = async () => {
     const { getWallets } = await import("@wallet-standard/app");
     const wallets = getWallets().get().filter((w: any) => w.features["standard:connect"] && w.chains.some((c: string) => c.startsWith("solana:")));
@@ -65,7 +86,8 @@ export function useIdentity(mode: Mode) {
     const w: any = wallets[0];
     const { accounts } = await w.features["standard:connect"].connect();
     if (!accounts?.length) throw new Error("wallet returned no account");
-    setDemoUser(accounts[0].address);
+    const addr = String(accounts[0].address);                       // a connected wallet IS the identity
+    setUser(addr); try { localStorage.setItem(ID_KEY, addr); localStorage.setItem(MODE_KEY, "wallet"); localStorage.setItem(CHOICE_KEY, "1"); } catch { /* private */ }
   };
 
   const headers = useCallback((): Record<string, string> => {
@@ -75,7 +97,7 @@ export function useIdentity(mode: Mode) {
     return h;
   }, [mode, token, user]);
 
-  return { mode, user, token, pollar: p, pollarErr, setDemoUser, connectWallet, headers,
+  return { mode, user, token, pollar: p, pollarErr, setDemoUser, connectWallet, headers, label, displayName, saveName, chosen: readIdentity().chosen,
     signInGoogle: () => p?.login?.({ provider: "google" }), signOut: () => p?.logout?.() };
 }
 
@@ -185,11 +207,11 @@ export function App({ mode }: { mode: Mode }) {
         <section className="panel">
           <div className="label">You</div>
           {mode === "pollar" ? (
-            signedIn ? <div className="row"><span className="ok">{id.user}</span><button className="ghost" onClick={id.signOut}>sign out</button></div>
+            signedIn ? <div className="row"><span className="ok" title={id.user}>{id.label}</span><button className="ghost" onClick={id.signOut}>sign out</button></div>
               : <div className="row"><button onClick={id.signInGoogle}>Sign in with Google</button><span className="dim">creates your Pollar wallet</span></div>
           ) : (
             <div className="row">
-              <input value={id.user} placeholder="your name" onChange={(e) => id.setDemoUser(e.target.value.trim())} />
+              {id.user ? <span className="ok" title={id.user}>{id.label}</span> : <button onClick={() => id.setDemoUser()}>Play as guest</button>}
               <button className="ghost" onClick={() => id.connectWallet().then(() => say("wallet connected")).catch((e) => say(e.message))}>or connect a Solana wallet</button>
             </div>
           )}

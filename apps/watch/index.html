@@ -243,6 +243,47 @@ header { display: flex; align-items: center; gap: 14px; padding: 22px 0 10px; fl
 @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 @media (max-width: 760px) { #seats { grid-template-columns: 1fr 1fr; } .seatrow .btn:not(.text):not(.outline) { width: 100%; } }
 
+/* ---------- account, popovers, mini bar ---------- */
+.account { display: flex; align-items: center; gap: 10px; }
+.account .who { font-weight: 600; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account .bal { font: 800 22px/1 var(--cond); font-variant-numeric: tabular-nums; }
+.account .bal small { display: block; font: 500 11px/1 var(--sans); color: var(--soft); margin-top: 2px; }
+.btn.yellow { background: var(--yellow); color: #14121A; }
+.btn.blue { background: var(--blue); color: #FFFFFF; }
+.btn.wide { display: block; width: 100%; margin-top: 8px; }
+.btn.small { font-size: 13px; padding: 7px 12px; box-shadow: 3px 3px 0 var(--hard); }
+.popover { position: fixed; top: 84px; right: 24px; z-index: 40; width: min(340px, calc(100vw - 32px)); background: var(--sheet); color: var(--text); border: 3px solid var(--line); box-shadow: 8px 8px 0 var(--hard); padding: 16px 18px 14px; animation: stamp .15s var(--snap); }
+.popover[hidden] { display: none; }
+.popover h2 { margin: 0 0 10px; }
+.popover .help { color: var(--soft); font-size: 13px; margin: 6px 0 4px; }
+.popover .help.err { color: var(--red-text); font-weight: 600; min-height: 1.2em; }
+.popover input { font: 500 15px var(--sans); background: var(--sheet); color: var(--text); border: 3px solid var(--line); padding: 8px 10px; width: 100%; }
+.popover .balance { margin-bottom: 10px; } .popover .balance b { font: 800 24px/1 var(--cond); margin-left: 6px; } .popover .balance small { color: var(--soft); margin-left: 6px; }
+#minibar { display: none; position: sticky; top: 0; z-index: 30; align-items: center; gap: 12px; margin: 0 -24px; padding: 8px 24px; background: var(--board); border-bottom: 3px solid var(--line); }
+#minibar b { font: 800 26px/1 var(--cond); color: var(--red); }
+#minibar span { font: 600 15px/1.2 var(--cond); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#firedMore { margin-top: 4px; }
+
+/* ---------- pinned board: header + fuse fixed, only the right panel scrolls (wide + tall viewports) ---------- */
+.leftcol { display: contents; }
+@media (min-width: 900px) and (min-height: 620px) {
+  html, body { height: 100%; overflow: hidden; }
+  .wrap { height: 100vh; display: flex; flex-direction: column; padding-bottom: 0; }
+  header, .fuse { flex: 0 0 auto; }
+  .fuse { margin: 14px 0 16px; }
+  #end { flex: 0 0 auto; }
+  .grid { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 400px; grid-template-rows: minmax(0, 1fr); grid-template-areas: "left right"; column-gap: 40px; align-items: stretch; }
+  .leftcol { grid-area: left; display: flex; flex-direction: column; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line) var(--board); padding-right: 6px; }
+  .left { flex: 0 0 auto; }
+  .foot { grid-area: auto; flex: 0 1 auto; min-height: 72px; overflow: hidden; display: flex; flex-direction: column; }
+  .foot #board { flex: 0 0 auto; } .foot #ticker { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+  .right { grid-area: right; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 6px 14px 24px 2px; scrollbar-width: thin; scrollbar-color: var(--line) var(--sheet); }
+  .right::-webkit-scrollbar { width: 8px; } .right::-webkit-scrollbar-track { background: var(--sheet); border-left: 3px solid var(--line); } .right::-webkit-scrollbar-thumb { background: var(--line); }
+  .money { margin-top: 0; }
+}
+@media (max-width: 899px), (max-height: 619px) { #minibar { display: flex; } }
+@media (max-width: 760px) { #minibar { margin: 0 -16px; padding: 8px 16px; } .popover { top: 72px; right: 16px; } }
+
 /* ---------- boom overlay ---------- */
 #boom { position: fixed; inset: 0; z-index: 50; display: none; pointer-events: none; overflow: hidden; contain: layout paint; }
 #boom.on { display: block; }
@@ -354,11 +395,14 @@ body.shake .wrap { animation: shake .3s steps(6); }
   <div class="wordmark">Word<b>Trap</b></div>
   <span id="meta">Waiting for a run to start</span>
   <span class="livewrap"><span id="live" class="off" role="img" aria-label="live"></span><span id="liveLabel">Waiting</span></span>
+  <div class="account" id="account"><button type="button" class="btn small" id="signInBtn">Sign in</button></div>
   <button id="themeBtn" type="button" aria-pressed="false" aria-label="Switch to dark theme" title="Switch theme">
     <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3a9 9 0 1 0 6 15.5A8 8 0 0 1 15 3z"/></svg>
     <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
   </button>
 </header>
+
+<div id="minibar" aria-hidden="true"><b id="miniFuse">—</b><span id="miniPrompt">Waiting for a run to start</span></div>
 
 <section class="fuse" aria-label="Fuse">
   <div class="track"><div id="rope"></div><div id="spark" class="idle"><i></i></div></div>
@@ -368,6 +412,7 @@ body.shake .wrap { animation: shake .3s steps(6); }
 <div id="end" role="status"></div>
 
 <main class="grid">
+  <div class="leftcol">
   <section class="left">
     <div class="tileno" id="tileNo">Tile — of —</div>
     <div class="strip" id="promptStrip"><h1 id="prompt">Waiting for a run to start</h1><span id="shieldTag" aria-hidden="true">Shielded</span></div>
@@ -390,6 +435,11 @@ body.shake .wrap { animation: shake .3s steps(6); }
     <div id="action"></div>
     <div id="words" aria-hidden="true"></div>
   </section>
+  <section class="foot">
+    <div id="board" aria-label="Progress"></div>
+    <div id="ticker" aria-live="polite"></div>
+  </section>
+  </div>
 
   <aside class="right">
     <div class="money" id="money">
@@ -400,6 +450,16 @@ body.shake .wrap { animation: shake .3s steps(6); }
         <div class="private" id="privateRow" hidden><button type="button" id="privateBtn" aria-pressed="false" aria-label="Private room"></button><span><b>Private room</b><br><span class="help">Only people with the link can join.</span></span></div>
         <div id="seatMsg" aria-live="polite"></div>
       </div>
+      <!-- planter sits right under the seats so a seated player reaches it without scrolling -->
+      <button id="plantToggle" type="button" aria-expanded="false" aria-controls="plantPanel">Plant a mine on a word</button>
+      <div class="plant" id="plantPanel">
+        <input id="pName" type="hidden" value="" />
+        <label>Stake in dollars<input id="pStake" type="number" step="0.05" min="0.05" value="0.25" /></label>
+        <label>A card from Byte's hand<input id="pWord" placeholder="coffee" autocomplete="off" /></label>
+        <button id="pBtn" type="button">Arm the mine</button>
+        <div id="pMsg" aria-live="polite"></div>
+      </div>
+
       <h2>Who's winning the money</h2>
       <div id="tug" role="img" aria-label="Backers versus mines"><i style="width:50%"></i></div>
       <div class="seatrow sidelinks"><a class="btn sidebtn blue" id="backLink" href="/side/">Back Byte</a><a class="btn sidebtn" id="trapLink" href="/side/">Set a trap</a></div>
@@ -412,24 +472,36 @@ body.shake .wrap { animation: shake .3s steps(6); }
       <h2>Mines on the board</h2>
       <div id="mines"><div class="empty">No mines armed yet. The crowd is quiet.</div></div>
       <p class="caption">Mines arm next turn. A challenge only disarms what's already live. The crowd can re-mine a word afterwards.</p>
-
-      <button id="plantToggle" type="button" aria-expanded="false" aria-controls="plantPanel">Plant a mine on a word</button>
-      <div class="plant" id="plantPanel">
-        <label>Your handle<input id="pName" value="you" autocomplete="nickname" /></label>
-        <label>Stake in dollars<input id="pStake" type="number" step="0.05" min="0.05" value="0.25" /></label>
-        <label style="grid-column:1/-1">A card from Byte's hand<input id="pWord" placeholder="coffee" autocomplete="off" /></label>
-        <button id="pBtn" type="button">Arm the mine</button>
-        <div id="pMsg" aria-live="polite"></div>
-      </div>
-      <a id="stakeLink" class="stakelink" href="/stake/" target="_blank" rel="noreferrer">or stake with a Pollar wallet</a>
+      <a id="stakeLink" class="stakelink" href="/stake/" target="_blank" rel="noreferrer" hidden>Pollar wallet page</a>
     </div>
   </aside>
 
-  <section class="foot">
-    <div id="board" aria-label="Progress"></div>
-    <div id="ticker" aria-live="polite"></div>
-  </section>
 </main>
+</div>
+
+<!-- first visit: a small panel, never a wall; the board stays watchable behind it -->
+<div class="popover" id="firstVisit" role="dialog" aria-labelledby="fvTitle" hidden>
+  <h2 id="fvTitle">Play or just watch</h2>
+  <button type="button" class="btn blue wide" id="googleBtn">Sign in with Google</button>
+  <div class="help" id="googleHelp"></div>
+  <button type="button" class="btn wide" id="guestBtn">Play as guest</button>
+  <div class="help">Guests play with test funds.</div>
+  <button type="button" class="btn text" id="justWatch">Just watch</button>
+</div>
+<div class="popover" id="namePrompt" role="dialog" aria-labelledby="npTitle" hidden>
+  <h2 id="npTitle">What should we call you?</h2>
+  <label for="nameInput" class="sr">Display name</label>
+  <input id="nameInput" maxlength="16" autocomplete="nickname" placeholder="2 to 16 characters" />
+  <div class="help">Letters, numbers, spaces and underscores. Shown on your seat and your mines.</div>
+  <div class="seatrow"><button type="button" class="btn" id="nameSave">Save</button><button type="button" class="btn text" id="nameLater">Later</button></div>
+  <div class="help err" id="nameMsg" aria-live="polite"></div>
+</div>
+<div class="popover" id="fundsPanel" role="dialog" aria-labelledby="fpTitle" hidden>
+  <h2 id="fpTitle">Add funds</h2>
+  <div class="balance">Balance <b id="fpBalance">$0.00</b> <small id="fpKind">Test funds</small></div>
+  <div id="fundsBody"></div>
+  <div class="help" id="fundsMsg" aria-live="polite"></div>
+  <button type="button" class="btn text" id="fundsClose">Close</button>
 </div>
 
 <div id="boom" aria-hidden="true"><div class="flash"></div><div class="lines"></div><div class="impact"></div><div class="plate"><div id="boomText"></div></div></div>
@@ -445,6 +517,13 @@ const POLL_MS = 1200;
 let runId = (location.pathname.match(/^\/watch\/([^/]+)/) || [])[1] || null;
 let state = null, lastSeq = 0, fired = new Set(), pendingMulti = false;
 const mySecrets = new Map(); // trapId -> {word, salt, setter, armedTurn}
+// ---- identity (wallet address or guest id), display names from the feed, funds ----
+import { identity, short, validName } from "/identity.js";
+let players = {};            // address -> display name, from the spectate feed
+let treasury = null;         // { pubkeyHex, mode, guestStartFunds } from /api/v1/treasury
+let balanceMicro = null;     // the signed-in player's ledger balance
+let pendingAction = null;    // what to resume after sign-in / name / top-up
+let firedOpen = false;       // fired-mines list expanded
 
 // ---- crypto: identical to packages/shared + the Rust program ----
 const sha = async (...parts) => {
@@ -497,10 +576,10 @@ function renderSeats(s) {
   const me = s.seats.some((x) => x.you);
   const free = s.seats.some((x) => x.kind === "open");
   $("seats").innerHTML = s.seats.map((seat, i) =>
-    `<div class="seat ${seat.kind}${seat.you ? " you" : ""}" role="listitem" tabindex="0" data-kind="${seat.kind}" data-seat="${i}" aria-label="${esc(seatLabel(seat, i))}">${seat.kind === "open" ? "Open seat" : seat.kind === "bot" ? "Bot" : esc(seat.you ? "You" : seat.name)}</div>`).join("");
+    `<div class="seat ${seat.kind}${seat.you ? " you" : ""}" role="listitem" tabindex="0" data-kind="${seat.kind}" data-seat="${i}" title="${esc(seat.address ?? seat.name ?? "")}" aria-label="${esc(seatLabel(seat, i))}">${seat.kind === "open" ? "Open seat" : seat.kind === "bot" ? "Bot" : esc(seat.you ? "You" : identity.label(seat.address ?? seat.name, players))}</div>`).join("");
   $("seatActions").innerHTML = (free && !me ? `<button type="button" class="btn" id="takeSeat">Take a seat</button>` : "")
     + `<button type="button" class="btn outline" id="copyLink">Copy room link</button>`
-    + (me ? `<button type="button" class="btn text" id="leaveSeat">Leave seat</button>` : "")
+    + (me ? `<button type="button" class="btn text" id="leaveSeat">Leave seat</button><button type="button" class="btn text" id="editName">Edit name</button>` : "")
     + (!free && !me ? `<span class="empty">Seats are full. You can still back Byte.</span>` : "");
   $("privateRow").hidden = !s.room?.host;
   $("privateBtn").setAttribute("aria-pressed", String(!!s.room?.private));
@@ -578,14 +657,22 @@ function render() {
 
   const armed = [...s.traps].reverse().filter((t) => t.status === "armed");
   const firedRows = [...firedTraps].reverse();
-  const yours = (t) => mySecrets.has(t.id) ? `<span class="yours">yours</span>` : "";
+  const mine = (t) => mySecrets.has(t.id) || (identity.id && t.setter === identity.id);
+  const yours = (t) => mine(t) ? `<span class="yours">yours</span>` : "";
+  const whoName = (id) => `<span title="${esc(id)}">${esc(identity.label(id, players) || "a viewer")}</span>`;
   const armedHtml = armed.map((t) =>
     `<div class="mine armed" data-id="${esc(t.id)}">${yours(t)}<span class="tag">Sealed</span><span class="stake"><b>${fmt(t.stake)}</b><small>${t.armedTurn <= s.turn ? "live now" : `live from turn ${t.armedTurn}`}</small></span></div>`).join("");
+  const firedRow = (t) => `<div class="mine fired" data-id="${esc(t.id)}">${yours(t)}<span class="word">${esc(t.word)}</span><span class="stake"><b>${fmt(t.stake)}</b><small>paid out to ${whoName(t.setter)}</small></span></div>`;
   const firedHtml = firedRows.length >= 8
     ? `<div class="mine summary" data-id="summary">${firedRows.length} mines fired, ${fmt(firedRows.reduce((n, t) => n + t.stake, 0))} in stakes paid out</div>`
-    : firedRows.map((t) =>
-      `<div class="mine fired" data-id="${esc(t.id)}">${yours(t)}<span class="word">${esc(t.word)}</span><span class="stake"><b>${fmt(t.stake)}</b><small>paid out to ${esc(t.setter || "a viewer")}</small></span></div>`).join("");
+    : firedRows.length > 4 && !firedOpen
+      ? `<button type="button" class="btn outline" id="firedMore">Show ${firedRows.length} fired mines</button>`
+      : firedRows.map(firedRow).join("");
   $("mines").innerHTML = armedHtml + firedHtml || `<div class="empty">No mines armed yet. The crowd is quiet.</div>`;
+  // slim pinned bar for small embeds (shown by CSS under 900px wide or 620px tall)
+  $("miniFuse").textContent = s.fuse;
+  $("miniPrompt").textContent = tile?.prompt ?? (s.status === "live" ? "" : "The run is over");
+  updatePlantButton();
 
   if (s.status !== "live") {
     $("end").className = `show ${s.status}`;
@@ -606,13 +693,13 @@ function tick(text, cls = "") {
 }
 
 function boom(word, who, payout) {
-  $("boomText").innerHTML = `${cutout("Boom")}<span class="stack">“${esc(word)}”</span><small>${esc(who)} is paid ${fmt(payout)}. Byte loses 22 fuse.</small>`;
+  $("boomText").innerHTML = `${cutout("Boom")}<span class="stack">“${esc(word)}”</span><small>${esc(identity.label(who, players) || "a viewer")} is paid ${fmt(payout)}. Byte loses 22 fuse.</small>`;
   const o = $("boom"); o.classList.remove("on", "multi"); void o.offsetWidth; o.classList.add("on");
   document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake");
 }
 // 2+ mines on the same word fired in one wave: one stacked flash with the total payout
 function multiBoom(e) {
-  const names = e.setters.map(esc);
+  const names = e.setters.map((s) => esc(identity.label(s, players) || "a viewer"));
   const who = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
   $("boomText").innerHTML = `${cutout("Boom")}<span class="stack">${e.count} mines on “${esc(e.word)}”</span><small>${who} split ${fmt(e.payout)}. Byte loses ${e.fuseBurn} fuse.</small>`;
   const o = $("boom"); o.classList.remove("on"); void o.offsetWidth; o.classList.add("multi", "on");
@@ -624,31 +711,52 @@ function onEvent(e) {
     case "action": { const detail = String(e.detail).replace(/\s·\s/g, ", ").replace(/\s—\s/g, ", "); $("action").innerHTML = `<b>${esc(prose[e.action] ?? e.action)}</b> — ${esc(detail)}`; tick(`Turn ${e.turn}: ${prose[e.action] ?? e.action}, ${detail}`); break; }
     case "hint": tick(`Byte paid $${e.costUsd} over x402 for risk scores`, "hint"); break;
     case "trap_planted": tick(`A viewer armed ${fmt(e.trap.stake)} on a sealed word, live from turn ${e.trap.armedTurn}`); break;
-    case "trap_fired": fired.add(e.trap.word); if (!pendingMulti) boom(e.trap.word, e.trap.setter || "a viewer", e.payout); tick(`“${e.trap.word}” blew up, ${e.trap.setter || "a viewer"} is paid ${fmt(e.payout)} and Byte lost ${e.fuseBurn} fuse`, "fire"); break;
+    case "trap_fired": fired.add(e.trap.word); if (!pendingMulti) boom(e.trap.word, e.trap.setter || "a viewer", e.payout); tick(`“${e.trap.word}” blew up, ${identity.label(e.trap.setter, players) || "a viewer"} is paid ${fmt(e.payout)} and Byte lost ${e.fuseBurn} fuse`, "fire"); break;
     case "multi_boom": multiBoom(e); tick(`${e.count} mines on “${e.word}” blew up together and paid out ${fmt(e.payout)}`, "fire"); break;
     case "match_end": tick(`The run is over: ${e.reason}`); break;
   }
 }
 
-// ---- demo planter: commit in-browser, keep salt locally, auto-reveal when Byte plays it ----
+// ---- planter: commit in-browser, keep the salt locally, auto-reveal when Byte plays it ----
+// The signed-in identity (wallet address or guest id) is the setter; there is no handle field. The
+// mine is funded from the player's balance through /plant-fiat, so the commitment uses the TREASURY
+// pubkey (the on-chain setter for fiat mines); the word and salt never leave this browser until played.
+const unhex = (h) => Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16)));
+function updatePlantButton() {
+  const b = $("pBtn");
+  const stake = Number($("pStake").value) || 0;
+  if (!identity.id) { b.textContent = "Sign in or play as guest"; b.dataset.need = "identity"; return; }
+  if (balanceMicro !== null && balanceMicro < Math.round(stake * 1e6)) { b.textContent = "Add funds to play"; b.dataset.need = "funds"; return; }
+  b.textContent = "Arm the mine"; b.dataset.need = "";
+}
+$("pStake").addEventListener("input", updatePlantButton);
 $("pBtn").onclick = async () => {
-  if (!runId) return ($("pMsg").textContent = "no live run yet");
-  const setter = $("pName").value.trim() || "you";
+  if (!runId) return ($("pMsg").textContent = "No live run yet.");
+  if (!identity.id) { pendingAction = "plant"; return openFirstVisit(); }
+  if (!identity.name) { pendingAction = "plant"; return openNamePrompt(); }
   const word = $("pWord").value.toLowerCase().replace(/[^a-z]/g, "");
-  if (word.length < 3) return ($("pMsg").textContent = "word must be 3+ letters a–z");
+  const stake = Number($("pStake").value);
+  if (word.length < 3) return ($("pMsg").textContent = "The word needs 3 or more letters, a to z.");
+  if (!(stake >= 0.05)) return ($("pMsg").textContent = "Stake at least $0.05.");
+  if (balanceMicro !== null && balanceMicro < Math.round(stake * 1e6)) { pendingAction = "plant"; return openFunds(); }
+  if (!treasury) treasury = await fetch("/api/v1/treasury").then((r) => r.json()).catch(() => null);
+  if (!treasury) return ($("pMsg").textContent = "The server didn't answer. Try again in a moment.");
+  $("pName").value = identity.id;
   const salt = crypto.getRandomValues(new Uint8Array(32));
-  const c = hex(await sha(enc.encode("wordtrap:v1"), enc.encode(word), salt, await mockKey(setter)));
-  const r = await fetch(`/runs/${runId}/plant`, { method: "POST", body: JSON.stringify({ commitmentHex: c, stake: Number($("pStake").value), setter }) }).then((r) => r.json());
-  if (r.error) return ($("pMsg").textContent = r.error);
-  mySecrets.set(r.id, { word, salt: hex(salt), setter, armedTurn: r.armedTurn });
-  $("pMsg").textContent = `armed: only your browser knows it's “${word}”. Live from turn ${r.armedTurn}.`;
+  const c = hex(await sha(enc.encode("wordtrap:v1"), enc.encode(word), salt, unhex(treasury.pubkeyHex)));
+  const r = await fetch(`/runs/${runId}/plant-fiat`, { method: "POST", headers: identity.headers(), body: JSON.stringify({ commitmentHex: c, stake, user: identity.id }) }).then((r) => r.json()).catch(() => ({ error: "The server didn't answer. Try again in a moment." }));
+  if (r.error) { $("pMsg").textContent = r.error; if (/insufficient/i.test(r.error)) { pendingAction = "plant"; openFunds(); } return; }
+  mySecrets.set(r.trap.id, { word, salt: hex(salt), setter: identity.id, armedTurn: r.trap.armedTurn });
+  balanceMicro = r.balanceMicro; renderAccount();
+  $("pMsg").textContent = `Armed: only your browser knows it's “${word}”. Live from turn ${r.trap.armedTurn}.`;
   $("pWord").value = "";
 };
 async function autoReveal() {
   for (const [id, s] of mySecrets) {
     if (!state.spoken.some((w) => w.word === s.word && w.turn >= s.armedTurn)) continue;
-    const r = await fetch(`/runs/${runId}/reveal`, { method: "POST", body: JSON.stringify({ trapId: id, word: s.word, saltHex: s.salt, setter: s.setter }) }).then((r) => r.json());
-    if (!r.error) { mySecrets.delete(id); $("pMsg").textContent = `YOUR MINE FIRED: +${fmt(r.payout)}`; }
+    const r = await fetch(`/runs/${runId}/reveal-fiat`, { method: "POST", headers: identity.headers(), body: JSON.stringify({ trapId: id, word: s.word, saltHex: s.salt, user: identity.id }) }).then((r) => r.json()).catch(() => ({ error: "offline" }));
+    if (!r.error && r.status === "paid") { mySecrets.delete(id); balanceMicro = r.balanceMicro; renderAccount(); $("pMsg").textContent = `Your mine fired: +${fmt(r.payoutMicro / 1e6)}`; }
+    else if (!r.error && r.status !== "armed") mySecrets.delete(id);
   }
 }
 
@@ -670,7 +778,8 @@ async function poll() {
     // seconds ago (default SPECTATE_DELAY_SECONDS). paced=1 attaches a board snapshot to every event.
     const r = await fetch(`/runs/${runId}/spectate?after=${lastSeq}&paced=1${DELAY !== null ? `&delay=${DELAY}` : ""}`);
     if (!r.ok) { $("meta").textContent = `Run ${runId} is not available (${r.status})`; return; }
-    const { seq, events, state: s } = await r.json();
+    const { seq, events, state: s, players: names } = await r.json();
+    if (names) players = names;
     lastSeq = seq; batchState = s;
     queue.push(...events);
     if (!playing && !queue.length) { snapshotHand(); state = s; render(); }   // nothing new: keep the clock/fuse honest
@@ -731,8 +840,9 @@ async function seatAction(action) {
 }
 $("seatActions").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b) return;
-  if (b.id === "takeSeat") seatAction("take");
+  if (b.id === "takeSeat") { if (!identity.id) { pendingAction = "seat"; return openFirstVisit(); } if (!identity.name) { pendingAction = "seat"; return openNamePrompt(); } seatAction("take"); }
   if (b.id === "leaveSeat") seatAction("leave");
+  if (b.id === "editName") openNamePrompt();
   if (b.id === "copyLink") {
     try { await navigator.clipboard.writeText(location.origin + "/watch/" + runId); b.textContent = "Link copied"; setTimeout(() => { b.textContent = "Copy room link"; }, 2000); }
     catch { $("seatMsg").textContent = "Couldn't copy. The link is " + location.origin + "/watch/" + runId; }
@@ -753,6 +863,74 @@ $("nextHand").addEventListener("click", (e) => {
   $("pMsg").textContent = `"${m.dataset.word}" is in the planter. Arm it before Byte reaches that tile.`;
 });
 $("nextHand").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("tap")) { e.preventDefault(); e.target.click(); } });
+$("mines").addEventListener("click", (e) => { if (e.target.closest("#firedMore")) { firedOpen = true; render(); } });
+
+// ---- account area, first visit, display name, funds (never blocks watching) ----
+const popovers = ["firstVisit", "namePrompt", "fundsPanel"];
+function closePopovers() { for (const id of popovers) $(id).hidden = true; }
+function openFirstVisit() { closePopovers(); $("firstVisit").hidden = false; $("guestBtn").focus(); }
+function openNamePrompt() { closePopovers(); $("nameInput").value = identity.name || ""; $("nameMsg").textContent = ""; $("namePrompt").hidden = false; $("nameInput").focus(); }
+function openFunds() {
+  closePopovers();
+  $("fpBalance").textContent = fmt((balanceMicro ?? 0) / 1e6);
+  $("fpKind").textContent = treasury?.mode === "pollar" ? "Pollar wallet" : "Test funds";
+  $("fundsBody").innerHTML = treasury?.mode === "pollar"
+    ? `<a class="btn blue wide" href="/stake/?run=${encodeURIComponent(runId ?? "")}">Top up with Pollar</a>`
+    : `<button type="button" class="btn yellow wide" id="addTestFunds">Add test funds</button><div class="help">Adds $10 of play money to your balance.</div>`;
+  $("fundsMsg").textContent = "";
+  $("fundsPanel").hidden = false;
+  ($("addTestFunds") ?? $("fundsClose")).focus();
+}
+function renderAccount() {
+  const a = $("account");
+  if (!identity.id) { a.innerHTML = `<button type="button" class="btn small" id="signInBtn">Sign in</button>`; return; }
+  const kind = treasury?.mode === "pollar" && identity.mode === "wallet" ? "Pollar wallet" : "Test funds";
+  a.innerHTML = `<span class="who" title="${esc(identity.id)}">${esc(identity.label(identity.id, players))}</span>`
+    + `<span class="bal">${fmt((balanceMicro ?? 0) / 1e6)}<small>${kind}</small></span>`
+    + `<button type="button" class="btn small yellow" id="addFundsBtn">Add funds</button>`;
+}
+async function refreshBalance() { const b = await identity.balance().catch(() => null); if (b) { balanceMicro = b.balanceMicro; renderAccount(); updatePlantButton(); } }
+async function resumePending() {
+  const p = pendingAction; pendingAction = null;
+  if (p === "plant") { $("plantPanel").classList.add("open"); $("plantToggle").setAttribute("aria-expanded", "true"); $("pBtn").focus(); }
+  if (p === "seat") $("takeSeat")?.click();
+}
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("button, a"); if (!t) return;
+  if (t.id === "signInBtn") openFirstVisit();
+  if (t.id === "addFundsBtn") openFunds();
+  if (t.id === "justWatch" || t.id === "fundsClose") closePopovers();
+  if (t.id === "guestBtn") {
+    identity.choose("guest");
+    closePopovers();
+    await identity.fundGuestOnce(treasury?.guestStartFunds ?? 10);   // exactly once per guest id
+    await refreshBalance();
+    if (!identity.name) openNamePrompt(); else resumePending();
+  }
+  if (t.id === "googleBtn") {
+    // Pollar sign-in lives in the wallet page (it needs the SDK); it returns here afterwards
+    if (treasury?.mode === "pollar") location.href = `/stake/?return=${encodeURIComponent(location.pathname + location.search)}`;
+    else $("googleHelp").textContent = "Google sign-in isn't set up on this server yet. Play as a guest for now.";
+  }
+  if (t.id === "nameLater") { closePopovers(); resumePending(); }
+  if (t.id === "nameSave") {
+    const n = validName($("nameInput").value);
+    if (!n) return ($("nameMsg").textContent = "Names are 2 to 16 characters: letters, numbers, spaces and underscores.");
+    try { await identity.saveName(n); closePopovers(); renderAccount(); render(); resumePending(); }
+    catch (err) { $("nameMsg").textContent = err.message; }
+  }
+  if (t.id === "addTestFunds") {
+    try { const r = await identity.addTestFunds(10); balanceMicro = r.balanceMicro; $("fpBalance").textContent = fmt(balanceMicro / 1e6); $("fundsMsg").textContent = "Added $10."; renderAccount(); updatePlantButton(); setTimeout(() => { closePopovers(); resumePending(); }, 700); }
+    catch (err) { $("fundsMsg").textContent = err.message; }
+  }
+});
+$("nameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("nameSave").click(); });
+(async () => {
+  treasury = await fetch("/api/v1/treasury").then((r) => r.json()).catch(() => null);
+  if (identity.id) { await identity.fetchProfile().catch(() => null); await refreshBalance(); }
+  renderAccount(); updatePlantButton();
+  if (!identity.chosen) openFirstVisit();                 // small panel; the board keeps playing behind it
+})();
 
 // ---- effects: everything below only reacts to a change between two polled states ----
 let handRects = new Map(), nextRects = new Map();

@@ -1,18 +1,22 @@
 // "Pick a side": fund either side of a run. Backers go through /runs/:id/back-fiat; trap setters
 // take a seat and are sent to the watch page planter. Money state comes from the live (undelayed)
-// spectate feed and GET /runs/:id/my-position. ?demo=closed|full|over overlays fixtures for review.
+// spectate feed and GET /runs/:id/my-position. ?demo=open|closed|full|over overlays fixtures for review.
+// Identity: the wallet address (Pollar / connected wallet) or a guest id made once; shown as the
+// display name or the short address. Watching never needs an account.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useIdentity } from "./App";
+import { useIdentity, shortAddress } from "./App";
 
 type Mode = "demo" | "pollar";
 const SERVER = (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "";
 const POLL_MS = 1500;
 const usd = (n: number) => "$" + Number(n || 0).toFixed(2);
-const money = (n: number) => { const s = usd(n); return s.endsWith(".00") && Number.isInteger(n) ? "$" + Math.round(n) : s; };
+const money = (n: number) => (Number.isInteger(n) ? "$" + n : usd(n));
 const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 const DEMO = new URLSearchParams(location.search).get("demo");
 const MULTIPLIER = 3;        // the program pays stake + 2x bounty: 3 times the stake (30_000 bps)
 const MIN_STAKE = 0.05;
+const NAME_RULE = "Names are 2 to 16 characters: letters, numbers, spaces and underscores.";
+const validName = (raw: string) => { const n = raw.trim().replace(/\s+/g, " "); return n.length >= 2 && n.length <= 16 && /^[A-Za-z0-9_][A-Za-z0-9 _]{0,15}$/.test(n) ? n : null; };
 
 function useCountUp(value: number) {
   const [shown, setShown] = useState(value);
@@ -27,12 +31,16 @@ function useCountUp(value: number) {
   return shown;
 }
 
+type Popover = null | "first" | "name" | "funds";
+
 export function Side({ mode }: { mode: Mode }) {
   const id = useIdentity(mode);
   const runId = (location.pathname.match(/^\/side\/([^/]+)/) || [])[1] || null;
   const [state, setState] = useState<any>(null);
+  const [players, setPlayers] = useState<Record<string, string>>({});
   const [pos, setPos] = useState<any>(null);
   const [balance, setBalance] = useState<any>(null);
+  const [treasury, setTreasury] = useState<any>(null);
   const [amount, setAmount] = useState(5);
   const [custom, setCustom] = useState("");
   const [showCustom, setShowCustom] = useState(false);
@@ -41,10 +49,17 @@ export function Side({ mode }: { mode: Mode }) {
   const [flash, setFlash] = useState(false);
   const [stamp, setStamp] = useState(false);
   const [closedSlam, setClosedSlam] = useState(false);
+  const [pop, setPop] = useState<Popover>(() => (id.chosen ? null : "first"));
+  const [nameDraft, setNameDraft] = useState("");
+  const [nameMsg, setNameMsg] = useState("");
+  const [fundsMsg, setFundsMsg] = useState("");
+  const [googleHelp, setGoogleHelp] = useState("");
+  const pending = useRef<null | "back" | "seat">(null);
   const prevBonus = useRef<number | null>(null);
   const prevOpen = useRef<boolean | null>(null);
   const [, forceRender] = useState(0);
   const signedIn = !!id.user;
+  const balMicro = balance ? (balance.balanceMicro as number) : 0;
 
   const api = useCallback(async (path: string, body?: unknown) => {
     const r = await fetch(SERVER + path, body === undefined ? { headers: id.headers() } : { method: "POST", headers: id.headers(), body: JSON.stringify({ ...(body as object), ...(mode === "demo" ? { user: id.user } : {}) }) });
@@ -63,17 +78,19 @@ export function Side({ mode }: { mode: Mode }) {
     return d;
   };
   const demoPos = (p: any) => {
-    if (DEMO !== "closed" && DEMO !== "over") return p;   // only those two fixtures carry a position
+    if (DEMO !== "closed" && DEMO !== "over") return p;
     const base = p ?? { stakeMicro: 0, stakeUsd: 0, sharePct: 0, payoutNowMicro: 0, payoutNowUsd: 0, minesPaidUsd: 0 };
     return { ...base, stakeUsd: 5, stakeMicro: 5e6, sharePct: 20, payoutNowUsd: 5.6, payoutNowMicro: 5.6e6, backingClosed: "Backing closed when Byte cleared the first tile." };
   };
+
+  useEffect(() => { fetch(SERVER + "/api/v1/treasury").then((r) => r.json()).then(setTreasury).catch(() => setTreasury(null)); }, []);
 
   // live money state: decisions happen against the real, undelayed game
   useEffect(() => {
     if (!runId) return;
     let alive = true;
     const tick = async () => {
-      try { const r = await fetch(`${SERVER}/runs/${runId}/spectate?delay=0`); if (!r.ok) return; const { state: s } = await r.json(); if (alive) setState(withDemo(s)); }
+      try { const r = await fetch(`${SERVER}/runs/${runId}/spectate?delay=0`); if (!r.ok) return; const j = await r.json(); if (alive) { setState(withDemo(j.state)); if (j.players) setPlayers(j.players); } }
       catch { /* retry next tick */ }
     };
     tick(); const t = setInterval(tick, POLL_MS);
@@ -81,9 +98,10 @@ export function Side({ mode }: { mode: Mode }) {
   }, [runId]);
 
   const refresh = useCallback(async () => {
-    if (!runId || !id.user) return;
-    try { setPos(demoPos(await api(`/runs/${runId}/my-position`))); } catch { setPos(demoPos(null)); }
+    if (!id.user) return;
     try { setBalance(await api("/api/v1/fiat/balance")); } catch { /* not signed in */ }
+    if (!runId) return;
+    try { setPos(demoPos(await api(`/runs/${runId}/my-position`))); } catch { setPos(demoPos(null)); }
   }, [api, runId, id.user]);
   useEffect(() => { refresh(); const t = setInterval(refresh, POLL_MS); return () => clearInterval(t); }, [refresh]);
 
@@ -98,21 +116,48 @@ export function Side({ mode }: { mode: Mode }) {
 
   const pool = useCountUp(state?.poolNow ?? 0);
   const amt = showCustom && custom.trim() !== "" ? Number(custom) : amount;
+  const needFunds = signedIn && balance !== null && balMicro < Math.round(amt * 1e6);
+  const label = (who: string) => players[who] || (who === id.user && id.displayName) || shortAddress(who);
 
+  async function playAsGuest() {
+    id.setDemoUser();
+    setPop(null);
+    const guest = (() => { try { return localStorage.getItem("wt.identity"); } catch { return null; } })();
+    if (guest && treasury?.guestStartFunds > 0) {
+      await fetch(SERVER + "/dev/credit", { method: "POST", headers: { "content-type": "application/json", "x-user": guest }, body: JSON.stringify({ user: guest, amount: treasury.guestStartFunds, paymentId: `guest-start-${guest}` }) }).catch(() => {});
+    }
+    await refresh();
+    if (!id.displayName) setPop("name"); else resume();
+  }
+  function resume() { const p = pending.current; pending.current = null; if (p === "back") back(); if (p === "seat") takeSeat(); }
+  async function saveName() {
+    const n = validName(nameDraft);
+    if (!n) return setNameMsg(NAME_RULE);
+    try { await id.saveName(n); setNameMsg(""); setPop(null); resume(); } catch (e: any) { setNameMsg(e.message); }
+  }
+  async function addTestFunds() {
+    try { await api("/dev/credit", { amount: 10 }); await refresh(); setFundsMsg("Added $10."); setTimeout(() => { setPop(null); setFundsMsg(""); resume(); }, 700); }
+    catch (e: any) { setFundsMsg(e.message); }
+  }
   async function back() {
-    if (!runId || !(amt > 0)) { setMsg("Choose an amount first."); return; }
+    if (!runId) return;
+    if (!signedIn) { pending.current = "back"; return setPop("first"); }
+    if (!id.displayName) { pending.current = "back"; return setPop("name"); }
+    if (!(amt > 0)) { setMsg("Choose an amount first."); return; }
+    if (needFunds) { pending.current = "back"; return setPop("funds"); }
     setBusy(true); setMsg("");
     try { await api(`/runs/${runId}/back-fiat`, { amount: amt }); await refresh(); if (!reduced) { setStamp(true); setTimeout(() => setStamp(false), 300); } }
-    catch (e: any) { setMsg(e.message); }
+    catch (e: any) { setMsg(e.message); if (/insufficient/i.test(e.message)) { pending.current = "back"; setPop("funds"); } }
     finally { setBusy(false); }
   }
   async function takeSeat() {
     if (!runId) return;
+    if (!signedIn) { pending.current = "seat"; return setPop("first"); }
+    if (!id.displayName) { pending.current = "seat"; return setPop("name"); }
     setBusy(true);
     try { await fetch(`${SERVER}/runs/${runId}/seat`, { method: "POST", headers: id.headers(), body: JSON.stringify({ action: "take", ...(mode === "demo" ? { user: id.user } : {}) }) }); } catch { /* seats may not exist on this server yet */ }
     location.href = `/watch/${runId}?plant=1`;
   }
-  async function addFunds() { try { await api("/dev/credit", { amount: 10 }); await refresh(); setMsg(""); } catch (e: any) { setMsg(e.message); } }
   const toggleTheme = () => { const n = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; document.documentElement.setAttribute("data-theme", n); try { localStorage.setItem("wt.theme", n); } catch { /* private */ } forceRender((x) => x + 1); };
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
 
@@ -125,11 +170,8 @@ export function Side({ mode }: { mode: Mode }) {
   const who = state?.callsign || "Byte";
   const live = state?.status === "live";
   const over = !!state && !live;
-  const signIn = (
-    mode === "pollar"
-      ? <button className="btn blue wide" onClick={id.signInGoogle}>Sign in with Google to play</button>
-      : <div className="row"><input value={id.user} placeholder="Your name" aria-label="Your name" onChange={(e) => id.setDemoUser(e.target.value.trim())} /><span className="soft">Type a name to play with test funds.</span></div>
-  );
+  const fundsKind = treasury?.mode === "pollar" && mode === "pollar" ? "Pollar wallet" : "Test funds";
+  const backLabel = !signedIn ? "Sign in to play" : needFunds ? "Add funds to play" : `Back Byte with ${money(amt)}`;
 
   return (
     <div className="wrap">
@@ -139,6 +181,11 @@ export function Side({ mode }: { mode: Mode }) {
         <span className="hright">
           {runId && <a className="back" href={`/watch/${runId}`}>Back to the board</a>}
           <span className="livewrap"><span className={`dot${live ? "" : " off"}`} role="img" aria-label={live ? "live" : "over"}></span>{live ? "Live" : state ? "Over" : "Waiting"}</span>
+          <span className="account">
+            {signedIn
+              ? <><span className="who" title={id.user}>{id.label}</span><span className="bal">{usd(balMicro / 1e6)}<small>{fundsKind}</small></span><button type="button" className="btn small yellow" onClick={() => setPop("funds")}>Add funds</button></>
+              : <button type="button" className="btn small" onClick={() => setPop("first")}>Sign in</button>}
+          </span>
           <button id="themeBtn" type="button" aria-pressed={dark} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} onClick={toggleTheme}>
             {dark ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
                   : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3a9 9 0 1 0 6 15.5A8 8 0 0 1 15 3z"/></svg>}
@@ -148,7 +195,7 @@ export function Side({ mode }: { mode: Mode }) {
 
       <div className="strip"><h1>Pick a side</h1></div>
 
-      {mode === "demo" && <div className="banner"><b>Test funds only.</b> No Pollar key is configured, so balances are play money.{signedIn && <button className="btn small" onClick={addFunds}>Add test funds</button>}</div>}
+      {mode === "demo" && <div className="banner"><b>Test funds only.</b> No Pollar key is configured, so balances are play money.</div>}
       {id.pollarErr && <div className="banner err">{id.pollarErr}</div>}
 
       <div className="status">
@@ -174,7 +221,7 @@ export function Side({ mode }: { mode: Mode }) {
             <p className="line">You win when the mines stay quiet.</p>
             <div className="figure">{usd(pool)}</div>
             <p className="soft under">in the pool from {state?.backerCount ?? 0} backer{state?.backerCount === 1 ? "" : "s"}</p>
-            {!signedIn ? signIn : hasPosition ? (
+            {hasPosition ? (
               <>
                 <div className={`receipt${stamp ? " stamp" : ""}`} role="status">
                   <p className="rtitle">You backed Byte with {money(pos.stakeUsd)}</p>
@@ -183,7 +230,7 @@ export function Side({ mode }: { mode: Mode }) {
                   <p>If the run ended now you would get <b className="bluetext">{usd(pos.payoutNowUsd)}</b></p>
                 </div>
                 {state?.backingOpen
-                  ? <div className="row"><button className="btn blue" disabled={busy} onClick={back}>Add {money(amt)} more</button><span className="soft">Wallet balance {usd(balance ? balance.balanceMicro / 1e6 : 0)}</span></div>
+                  ? <div className="row"><button className="btn blue" disabled={busy} onClick={back}>{needFunds ? "Add funds to play" : `Add ${money(amt)} more`}</button><span className="soft">Wallet balance {usd(balMicro / 1e6)}</span></div>
                   : <p className="closedline">{pos.backingClosed ?? "Backing closed when Byte cleared the first tile."}</p>}
               </>
             ) : state?.backingOpen === false ? (
@@ -196,8 +243,8 @@ export function Side({ mode }: { mode: Mode }) {
                     ? <input className="custom" inputMode="decimal" placeholder="0.00" aria-label="Custom amount in dollars" autoFocus value={custom} onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, ""))} />
                     : <button type="button" className="chip dashed" onClick={() => setShowCustom(true)}>Other amount</button>}
                 </div>
-                <p className="soft">Pollar wallet balance {usd(balance ? balance.balanceMicro / 1e6 : 0)}</p>
-                <button className="btn blue wide" disabled={busy || !(amt > 0)} onClick={back}>Back Byte with {money(amt)}</button>
+                <p className="soft">{signedIn ? `${fundsKind} balance ${usd(balMicro / 1e6)}` : "Sign in or play as guest to back Byte."}</p>
+                <button className="btn blue wide" disabled={busy || !(amt > 0)} onClick={back}>{backLabel}</button>
               </>
             )}
             {msg && <p className="msg" role="alert">{msg}</p>}
@@ -208,7 +255,7 @@ export function Side({ mode }: { mode: Mode }) {
             <h2 id="seth" className="title">Set traps</h2>
             <p className="line">You win when Byte plays your word.</p>
             <div className="seats" role="list" aria-label="Seats">
-              {seats.map((s, i) => <span key={i} role="listitem" className={`seat ${s.kind}`} aria-label={s.kind === "open" ? `Seat ${i + 1}, open` : s.kind === "bot" ? `Seat ${i + 1}, bot` : `Seat ${i + 1}, taken by ${s.name}`}>{s.kind === "open" ? "Open" : s.kind === "bot" ? "Bot" : s.name}</span>)}
+              {seats.map((s, i) => <span key={i} role="listitem" className={`seat ${s.kind}`} title={s.address ?? s.name ?? ""} aria-label={s.kind === "open" ? `Seat ${i + 1}, open` : s.kind === "bot" ? `Seat ${i + 1}, bot` : `Seat ${i + 1}, taken by ${label(s.address ?? s.name)}`}>{s.kind === "open" ? "Open" : s.kind === "bot" ? "Bot" : label(s.address ?? s.name)}</span>)}
             </div>
             <p className="soft">{free} of 4 seats free</p>
             <ul className="facts">
@@ -216,8 +263,8 @@ export function Side({ mode }: { mode: Mode }) {
               <li>A mine that goes off pays <b>{MULTIPLIER} times</b> its stake</li>
               <li>Smallest stake is <b>{usd(MIN_STAKE)}</b></li>
             </ul>
-            {!signedIn ? signIn : free > 0
-              ? <button className="btn yellow wide" disabled={busy} onClick={takeSeat}>Take a seat</button>
+            {free > 0
+              ? <button className="btn yellow wide" disabled={busy} onClick={takeSeat}>{signedIn ? "Take a seat" : "Sign in to play"}</button>
               : <p className="closedline">Seats are full. You can still back Byte.</p>}
           </section>
         </main>
@@ -228,6 +275,37 @@ export function Side({ mode }: { mode: Mode }) {
         <div><h3>A mine stays quiet</h3><p>Its stake goes to the backers.</p></div>
         <div><h3>The run ends</h3><p>Backers share whatever is left in the pool.</p></div>
       </section>
+
+      {pop === "first" && (
+        <div className="popover" role="dialog" aria-labelledby="fvTitle">
+          <h2 id="fvTitle">Play or just watch</h2>
+          <button type="button" className="btn blue wide" onClick={() => { if (mode === "pollar") id.signInGoogle(); else setGoogleHelp("Google sign-in isn't set up on this server yet. Play as a guest for now."); }}>Sign in with Google</button>
+          {googleHelp && <div className="help">{googleHelp}</div>}
+          <button type="button" className="btn yellow wide" onClick={playAsGuest}>Play as guest</button>
+          <div className="help">Guests play with test funds.</div>
+          <button type="button" className="btn text" onClick={() => { setPop(null); try { localStorage.setItem("wt.identity.choice", "1"); } catch { /* private */ } }}>Just watch</button>
+        </div>
+      )}
+      {pop === "name" && (
+        <div className="popover" role="dialog" aria-labelledby="npTitle">
+          <h2 id="npTitle">What should we call you?</h2>
+          <input value={nameDraft} maxLength={16} autoFocus aria-label="Display name" placeholder="2 to 16 characters" onChange={(e) => setNameDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveName(); }} />
+          <div className="help">Letters, numbers, spaces and underscores. Shown on your seat and your mines.</div>
+          <div className="row"><button type="button" className="btn yellow" onClick={saveName}>Save</button><button type="button" className="btn text" onClick={() => { setPop(null); resume(); }}>Later</button></div>
+          {nameMsg && <div className="help err">{nameMsg}</div>}
+        </div>
+      )}
+      {pop === "funds" && (
+        <div className="popover" role="dialog" aria-labelledby="fpTitle">
+          <h2 id="fpTitle">Add funds</h2>
+          <div className="balance">Balance <b>{usd(balMicro / 1e6)}</b> <small>{fundsKind}</small></div>
+          {treasury?.mode === "pollar" && mode === "pollar"
+            ? <a className="btn blue wide" href={`/stake/?run=${encodeURIComponent(runId ?? "")}`}>Top up with Pollar</a>
+            : <><button type="button" className="btn yellow wide" onClick={addTestFunds}>Add test funds</button><div className="help">Adds $10 of play money to your balance.</div></>}
+          {fundsMsg && <div className="help">{fundsMsg}</div>}
+          <button type="button" className="btn text" onClick={() => setPop(null)}>Close</button>
+        </div>
+      )}
     </div>
   );
 }

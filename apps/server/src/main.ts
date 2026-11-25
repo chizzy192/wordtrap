@@ -21,6 +21,7 @@ import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
 import { FiatLedger, FiatError, MockPollar, confirmPayment, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway } from "./fiat.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
+import { MemoryProfileStore, validateName, type ProfileStore } from "./profiles.ts";
 
 const WATCH_HTML = fileURLToPath(new URL("../../watch/index.html", import.meta.url));
 const SPEC_JSON = fileURLToPath(new URL("../../../byte.game.json", import.meta.url));
@@ -48,6 +49,10 @@ export interface AppOptions {
   pollar?: PollarGateway;
   /** Default spectator delay in seconds for GET /runs/:id/spectate (env SPECTATE_DELAY_SECONDS, default 4). Never affects the Byte API. */
   spectateDelay?: number;
+  /** Player display names keyed by wallet address / guest id. Default: in memory. */
+  profiles?: ProfileStore;
+  /** Test funds a new guest is credited once (env GUEST_START_FUNDS, default 10). Mock chain only. */
+  guestStartFunds?: number;
 }
 
 export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
@@ -82,6 +87,9 @@ export function createApp(o: AppOptions = {}): App {
   const chainKind = o.chainKind ?? (process.env.CHAIN === "solana" ? "solana" : "mock");
   const envDelay = Number(process.env.SPECTATE_DELAY_SECONDS);
   const spectateDelay = Math.min(20, Math.max(0, o.spectateDelay ?? (Number.isFinite(envDelay) ? envDelay : 4)));
+  const profiles = o.profiles ?? new MemoryProfileStore();
+  const envGuest = Number(process.env.GUEST_START_FUNDS);
+  const guestStartFunds = Math.max(0, o.guestStartFunds ?? (Number.isFinite(envGuest) ? envGuest : 10));
   const ledger = new FiatLedger(o.ledgerPath === undefined ? (process.env.FIAT_LEDGER_PATH ?? LEDGER_DEFAULT) : o.ledgerPath);
   const pollar = o.pollar ?? pollarFromEnv();
 
@@ -194,11 +202,32 @@ export function createApp(o: AppOptions = {}): App {
         } catch { return json(res, 404, { error: "stake page not built: run `npm run build -w apps/stake`" }); }
       }
 
+      // ---- player identity: shared browser module + display-name profiles ----
+      if (p === "/identity.js") {
+        res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+        return res.end(await readFile(fileURLToPath(new URL("../../watch/identity.js", import.meta.url))));
+      }
+      if (p === "/api/v1/profile") {
+        const b = req.method === "PUT" || req.method === "POST" ? await readJson(req) : Object.fromEntries(url.searchParams);
+        const address = await identify(req, b);           // the wallet address / guest id is the identity
+        if (req.method === "GET") {
+          const prof = await profiles.get(address);
+          return json(res, 200, { address, name: prof?.name ?? null, hasName: !!prof?.name });
+        }
+        if (req.method === "PUT" || req.method === "POST") {
+          const v = validateName(b.name);
+          if (!v.ok) return json(res, 400, { error: v.error });
+          const prof = await profiles.put(address, v.name);
+          return json(res, 200, { address, name: prof.name, hasName: true });
+        }
+        return json(res, 405, { error: "GET or PUT" });
+      }
+
       // ---- fiat staking (Pollar): custodial treasury path, see fiat.ts ----
       if (p === "/api/v1/treasury") {
         const chain = runs.current()?.chain ?? (await makeChain());
         const t = chain.treasury();
-        return json(res, 200, { setter: t.setter, pubkeyHex: toHex(t.pubkey), chain: chain.kind, mode: pollar.kind === "pollar" ? "pollar" : "demo-credits" });
+        return json(res, 200, { setter: t.setter, pubkeyHex: toHex(t.pubkey), chain: chain.kind, mode: pollar.kind === "pollar" ? "pollar" : "demo-credits", guestStartFunds: chainKind === "mock" ? guestStartFunds : 0 });
       }
       if (p === "/api/v1/fiat/balance" && req.method === "GET") {
         const user = await identify(req, Object.fromEntries(url.searchParams));
@@ -315,7 +344,10 @@ export function createApp(o: AppOptions = {}): App {
         if (sp[2] === "spectate") {
           const raw = url.searchParams.get("delay");
           const delay = raw === null || raw === "" || !Number.isFinite(Number(raw)) ? spectateDelay : Number(raw);
-          return json(res, 200, runs.spectate(run, Number(url.searchParams.get("after") ?? 0), delay, url.searchParams.get("paced") === "1"));
+          const feed = runs.spectate(run, Number(url.searchParams.get("after") ?? 0), delay, url.searchParams.get("paced") === "1");
+          // display names for every player on the board (setters, fiat backers); the page shows short addresses for the rest
+          const ids = new Set<string>([...feed.state.traps.map((t) => t.setter), ...Object.keys(ledger.backersOf(run.id))]);
+          return json(res, 200, { ...feed, players: await profiles.names(ids) });
         }
         // Mock-only viewer endpoints (production: viewers sign on-chain txs from mobile/Pollar).
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });

@@ -51,6 +51,7 @@ Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) 
 | `FAST=1` | off | Sim driver acts every 600 ms instead of 2.5 s. |
 | `ONE_MATCH=1` | off | Sim exits after one run: 0 escaped, 3 dead. |
 | `SPECTATE_DELAY_SECONDS` | 4 | Default delay for the spectator feed, so the watch page stays in step with Byte's narration on its own stream. `GET /runs/:id/spectate?delay=<0..20>` overrides it per request (the watch page passes its own `?delay=` through; the stake page and phone use `delay=0`). `paced=1` attaches a board snapshot to each event so the page can replay them one at a time. The Byte API is never delayed. |
+| `GUEST_START_FUNDS` | 10 | Test funds a new guest is credited once (keyed by guest id, so a reload never credits twice). Mock chain only. Players are identified by their wallet address or a guest id made once in the browser; display names live behind `GET`/`PUT /api/v1/profile` (in memory now, behind a store interface). |
 | `PORT` | 8787 | Listen port. |
 | `CHAIN=solana` | mock | Real devnet program via `RPC_URL`, `AUTHORITY_KEYPAIR`, `USDC_MINT`. `CROWD` is a no-op here (warning at startup). |
 | `X402_FACILITATOR`, `ORACLE_PAYTO`, `X402_NETWORK` | sim verifier | Real x402 settlement for the risk oracle. |
