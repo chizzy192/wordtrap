@@ -79,8 +79,9 @@ curl -s -H "Authorization: Bearer $KEY" -d '{"word":"alpaca"}' localhost:8787/ap
 
 ## Fiat staking (Pollar)
 
-Viewers without a wallet sign in with Google through Pollar and stake from a server-side ledger
-(integer micro-USD). The server treasury is the on-chain setter for all of them; the browser keeps the
+Google sign-in creates a Pollar wallet; viewers stake from that wallet balance, tracked in a
+server-side ledger (integer micro-USD). Local-currency top-up (Pix, bank QR, bank transfer) is
+[ROADMAP] and is not offered anywhere in this build. The server treasury is the on-chain setter for all of them; the browser keeps the
 word and salt and reveals through the server once Byte has played the card. Details and invariants:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#fiat-staking-pollar).
 

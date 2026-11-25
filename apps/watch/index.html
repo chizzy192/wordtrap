@@ -4,164 +4,428 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>WordTrap — Live</title>
+<meta name="color-scheme" content="light dark" />
+<script>
+// Theme before first paint: ?theme=dark|light, then the saved toggle, then the OS preference.
+(function () {
+  var q = new URLSearchParams(location.search).get("theme");
+  var t = q === "dark" || q === "light" ? q : null;
+  if (!t) { try { t = localStorage.getItem("wt.theme"); } catch (e) {} }
+  if (t !== "dark" && t !== "light") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Bungee&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=Barlow:wght@400;500;600&family=Alfa+Slab+One&family=Abril+Fatface&family=Special+Elite&display=swap" rel="stylesheet" />
 <style>
-  :root {
-    --bg: #0b0a10; --panel: #15131d; --line: #2a2636; --ink: #ece8f4; --dim: #8c86a0;
-    --fuse: #ffb020; --hot: #ff3b4e; --safe: #3ce0a0; --mine: #9b7bff;
-    --display: "Bungee", Impact, sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: radial-gradient(1200px 600px at 20% -10%, #1d1530 0%, var(--bg) 60%); color: var(--ink); font: 14px/1.45 var(--mono); min-height: 100vh; }
-  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
-  .logo { font: 26px var(--display); letter-spacing: 1px; }
-  .logo b { color: var(--hot); }
-  .live { background: var(--hot); color: #fff; padding: 2px 8px; border-radius: 3px; font-weight: 600; font-size: 12px; animation: pulse 1.4s infinite; }
-  .live.off { background: var(--line); animation: none; }
-  .meta { color: var(--dim); margin-left: auto; }
-  @keyframes pulse { 50% { opacity: .45; } }
+/* ---------- tokens ---------- */
+:root, :root[data-theme="light"] {
+  --board: #FFFDF7; --text: #14121A; --soft: #4A4658; --sheet: #FFFFFF; --line: #14121A; --hard: #14121A;
+  --red: #FF2E4C; --red-text: #D4183A; --yellow: #FFD60A; --blue: #2D5BFF; --blue-text: #2D5BFF; --ink: #14121A;
+  --dot: rgba(20, 18, 26, .13); --grey: #E6E3EE; --grey-text: #4A4658;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --board: #14121A; --text: #FFFDF7; --soft: #B9B4CC; --sheet: #1F1C2B; --line: #FFFDF7; --hard: #2D5BFF;
+  --red: #FF2E4C; --red-text: #FF5C74; --yellow: #FFD60A; --blue: #2D5BFF; --blue-text: #8FA9FF; --ink: #14121A;
+  --dot: rgba(255, 253, 247, .09); --grey: #E6E3EE; --grey-text: #4A4658;
+  color-scheme: dark;
+}
+:root {
+  --cond: "Barlow Condensed", "Arial Narrow", Impact, "Helvetica Neue", Arial, sans-serif;
+  --sans: "Barlow", "Helvetica Neue", Arial, sans-serif;
+  --cut1: "Alfa Slab One", "Rockwell Extra Bold", Georgia, serif;
+  --cut2: "Abril Fatface", "Bodoni MT", Georgia, serif;
+  --cut3: "Special Elite", "Courier New", monospace;
+  --cut4: "Barlow Condensed", "Arial Narrow", Impact, sans-serif;
+  --snap: cubic-bezier(.2, 1.4, .3, 1);
+}
 
-  main { display: grid; grid-template-columns: 1fr 340px; gap: 18px; padding: 18px 24px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
-  .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; }
+/* ---------- base ---------- */
+* { box-sizing: border-box; }
+html { background: var(--board); }
+body {
+  margin: 0; color: var(--text); background: var(--board);
+  background-image: radial-gradient(var(--dot) 1.1px, transparent 1.3px); background-size: 14px 14px;
+  font: 500 15px/1.45 var(--sans); min-height: 100vh; overflow-x: hidden;
+  font-variant-numeric: tabular-nums;
+}
+body.danger { box-shadow: inset 0 0 0 6px var(--red); }
+h2 { font: 600 17px/1.2 var(--sans); margin: 22px 0 10px; }
+a { color: var(--blue-text); }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px 32px; overflow-x: clip; }  /* stamps and slams scale past the edge for a frame; never let that widen the page */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-  /* fuse */
-  .fuse { position: relative; height: 22px; background: #221d2e; border-radius: 11px; overflow: visible; }
-  .fuse .rope { position: absolute; inset: 0; width: 100%; border-radius: 11px; background: repeating-linear-gradient(-45deg, #c98a1a 0 8px, #a86f0f 8px 16px); transition: width .4s linear; }
-  .fuse .spark { position: absolute; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: radial-gradient(circle, #fff 0 20%, var(--fuse) 35%, transparent 70%); filter: blur(.5px); animation: spark .15s infinite alternate; transition: left .4s linear; }
-  @keyframes spark { to { transform: scale(1.35); } }
-  .fuse-row { display: flex; align-items: baseline; gap: 14px; margin-top: 8px; }
-  .fuse-sec { font: 44px var(--display); color: var(--fuse); }
-  .fuse-sec.low { color: var(--hot); animation: pulse .5s infinite; }
+/* ---------- header ---------- */
+header { display: flex; align-items: center; gap: 14px; padding: 22px 0 10px; flex-wrap: wrap; }
+.wordmark { font: 800 30px/1 var(--cond); letter-spacing: -.5px; }
+.wordmark b { color: var(--red); font-weight: 800; }
+#meta { color: var(--soft); font-weight: 500; }
+.livewrap { margin-left: auto; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+#live { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--red); background: var(--board); position: relative; }
+#live::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--red); }
+#live.off { border-color: var(--soft); } #live.off::after { background: var(--soft); }
+#themeBtn { width: 44px; height: 44px; border-radius: 50%; border: 3px solid var(--line); background: var(--board); color: var(--text); cursor: pointer; display: grid; place-items: center; padding: 0; }
+#themeBtn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2.5; }
+:root[data-theme="dark"] #themeBtn .moon, :root[data-theme="light"] #themeBtn .sun { display: none; }
 
-  /* board */
-  .board { display: flex; gap: 8px; margin-top: 18px; align-items: stretch; }
-  .tile { flex: 1; min-height: 64px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 11px; color: var(--dim); position: relative; background: #120f19; }
-  .tile.cleared { border-color: #1f5b45; color: #4fa883; background: #0f1a16; }
-  .tile.here { border-color: var(--fuse); color: var(--ink); box-shadow: 0 0 0 2px #ffb02033, 0 0 24px #ffb02022; }
-  .tile.here::before { content: "BYTE"; position: absolute; top: -10px; left: 8px; background: var(--fuse); color: #000; font: 10px var(--display); padding: 1px 6px; border-radius: 3px; }
-  .tile.exit { flex: .6; display: grid; place-items: center; font: 14px var(--display); color: var(--safe); border-style: dashed; }
+/* ---------- fuse ---------- */
+.fuse { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center; margin: 22px 0 28px; }
+.track { position: relative; height: 44px; }
+.track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 5px dashed var(--soft); opacity: .55; transform: translateY(-50%); }
+#rope { position: absolute; left: 0; top: 50%; height: 18px; transform: translateY(-50%); width: 100%; background: var(--red); border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--hard); transition: width .4s ease-out; }
+#spark { position: absolute; top: 50%; left: 100%; width: 54px; height: 54px; margin: -27px 0 0 -27px; transition: left .4s ease-out; }
+#spark::before, #spark::after { content: ""; position: absolute; inset: 0; clip-path: polygon(50% 0%,58% 32%,85% 15%,68% 42%,100% 50%,68% 58%,85% 85%,58% 68%,50% 100%,42% 68%,15% 85%,32% 58%,0% 50%,32% 42%,15% 15%,42% 32%); }
+#spark::before { background: var(--ink); transform: scale(1.12); }
+#spark::after { background: var(--yellow); }
+#spark i { position: absolute; inset: 36%; border-radius: 50%; background: #fff; }
+.fusenum { text-align: right; }
+#fuseSec { font: 800 76px/.9 var(--cond); color: var(--red); text-shadow: 5px 5px 0 var(--hard); display: inline-block; }
+.fuselabel { font-weight: 600; font-size: 14px; margin-top: 6px; }
 
-  .prompt { font: 28px/1.15 var(--display); margin: 22px 0 6px; }
-  .need { color: var(--dim); }
-  .bubble { margin-top: 14px; background: #1c1827; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; font-size: 18px; min-height: 64px; }
-  .bubble .w { display: inline-block; margin-right: .3em; }
-  .bubble .w.boom { color: #fff; background: var(--hot); border-radius: 4px; padding: 0 4px; }
-  .bubble .empty { color: var(--dim); font-size: 14px; }
-  .action { margin-top: 10px; color: var(--dim); }
-  .action b { color: var(--fuse); }
+/* ---------- layout ---------- */
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; grid-template-rows: auto 1fr; grid-template-areas: "left right" "foot right"; column-gap: 40px; align-items: start; }
+.left { grid-area: left; min-width: 0; }
+.right { grid-area: right; }
+.foot { grid-area: foot; min-width: 0; }
+.tileno { color: var(--soft); font-weight: 500; }
+.strip { display: inline-block; max-width: 100%; margin: 10px 0 14px; padding: 18px 26px; background: var(--yellow); color: var(--ink); border: 4px solid var(--ink); box-shadow: 8px 8px 0 var(--hard); transform: rotate(-1deg); transform-origin: left center; }
+#prompt { font: 800 40px/1.05 var(--cond); margin: 0; letter-spacing: -.3px; overflow-wrap: anywhere; }
+#need { color: var(--soft); margin-top: 6px; }
 
-  /* hand of word cards */
-  .hand { display: flex; flex-wrap: wrap; gap: 8px; }
-  .card { padding: 10px 12px; min-width: 92px; text-align: center; border-radius: 8px; border: 1px solid var(--line); background: #110f18; font: 16px var(--display); color: var(--ink); position: relative; }
-  .card .risk { display: block; font: 10px var(--mono); color: var(--dim); margin-top: 2px; letter-spacing: 1px; }
-  .card.hot .risk { color: var(--fuse); }
-  .card.boom { border-color: var(--hot); color: var(--hot); background: #2a0f15; }
-  .card.ch { border-color: var(--mine); color: var(--mine); text-decoration: line-through; }
-  .card.played { opacity: .35; }
+/* cards */
+#hand { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 18px 16px; position: relative; padding: 4px 6px 8px 0; }
+.card { min-height: 92px; padding: 12px 13px 12px; background: #FFFFFF; color: #14121A; border: 3px solid #14121A; box-shadow: 5px 5px 0 var(--hard); position: relative; transform: rotate(var(--tilt, 0deg)); }
+.card:nth-child(odd) { --tilt: 1.2deg; } .card:nth-child(even) { --tilt: -1deg; } .card:nth-child(3n) { --tilt: .6deg; }
+.card .w { display: block; font: 800 25px/1 var(--cond); letter-spacing: -.3px; overflow-wrap: anywhere; hyphens: auto; }
+.card .risk { display: block; font: 600 12.5px/1.2 var(--sans); color: #14121A; margin-top: 7px; min-height: 15px; }
+.card .bar { display: block; height: 6px; width: 0; margin-top: 6px; background: #14121A; max-width: 100%; transition: width .3s ease-out; }
+.card.hot { background: #FFFFFF radial-gradient(#FF2E4C 1.4px, transparent 1.7px); background-size: 11px 11px; box-shadow: 5px 5px 0 var(--red); }
+.card.hot .risk { color: #D4183A; } .card.hot .bar { background: #FF2E4C; }
+.card.ch { background: var(--grey); box-shadow: none; }
+.card.ch .w { color: #5E5970; }
+.card.ch .risk { color: #4A4658; }
+.card.ch::after { content: ""; position: absolute; left: 10px; right: 10px; top: 30px; height: 7px; background: #14121A; transform: rotate(-8deg); transform-origin: left center; }
+.card.boom { box-shadow: 5px 5px 0 var(--red); border-color: #FF2E4C; }
+.card.boom .w { color: #D4183A; }
+.empty { color: var(--soft); }
 
-  .words { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--dim); }
-  .chip.boom { border-color: var(--hot); color: var(--hot); }
-  .chip.ch { border-color: var(--mine); color: var(--mine); text-decoration: line-through; }
+/* played strip */
+#bubble { display: flex; flex-wrap: wrap; gap: 18px 22px; align-items: center; min-height: 64px; padding: 4px 0 6px; }
+#bubble .w { display: inline-block; padding: 14px 22px; background: #FFFFFF; color: #14121A; border: 3px solid #14121A; box-shadow: 5px 5px 0 var(--hard); font: 800 30px/1 var(--cond); transform: rotate(-.6deg); }
+#bubble .w:nth-child(even) { transform: rotate(.8deg); }
+#bubble .w.boom { padding: 0; background: none; border: 0; box-shadow: none; transform: none; }
+#action { margin: 16px 0 4px; }
+#action b { font-weight: 600; }
 
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .stat { background: #110f18; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
-  .stat .v { font: 20px var(--display); }
-  .stat.b .v { color: var(--safe); } .stat.m .v { color: var(--mine); }
+/* cut-out letters */
+.cut { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.cut .ltr { display: inline-grid; place-items: center; min-width: 1.05em; height: 1.25em; padding: 0 .12em; border: 2px solid #14121A; font-size: inherit; line-height: 1; font-weight: 800; }
+.cut .ltr:nth-child(odd) { transform: rotate(-4deg); } .cut .ltr:nth-child(even) { transform: rotate(3deg); } .cut .ltr:nth-child(3n) { transform: rotate(-1.5deg) translateY(2px); }
+.cut .c0 { background: #14121A; color: #FFFDF7; } .cut .c1 { background: #FFFFFF; color: #14121A; } .cut .c2 { background: #FF2E4C; color: #FFFFFF; }
+.cut .c3 { background: #FFD60A; color: #14121A; } .cut .c4 { background: #FFFFFF; color: #FF2E4C; } .cut .c5 { background: #2D5BFF; color: #FFFFFF; }
+.cut .f0 { font-family: var(--cut1); } .cut .f1 { font-family: var(--cut2); } .cut .f2 { font-family: var(--cut3); } .cut .f3 { font-family: var(--cut4); }
+#bubble .cut { font-size: 34px; }
 
-  .mines { display: flex; flex-direction: column; gap: 6px; max-height: 290px; overflow: auto; }
-  .mine { display: flex; justify-content: space-between; padding: 6px 10px; background: #120f19; border-radius: 6px; border-left: 3px solid var(--mine); font-size: 12px; }
-  .mine.fired { border-left-color: var(--hot); background: #2a0f15; }
-  .mine .hash { color: var(--dim); letter-spacing: 2px; }
-  .mine.fired .hash { color: #fff; letter-spacing: 0; font-weight: 600; }
+/* progress strip + log */
+#board { display: flex; gap: 8px; align-items: center; margin: 22px 0 14px; }
+.seg { flex: 1; height: 16px; border: 3px solid var(--line); background: transparent; }
+.seg.done { background: var(--blue); } .seg.here { background: var(--red); }
+.seg.exit { flex: 0 0 auto; border: 0; height: auto; font: 800 22px/1 var(--cond); color: var(--blue-text); padding-left: 6px; }
+#ticker { display: flex; flex-direction: column; gap: 6px; }
+#ticker div { font-weight: 500; }
+#ticker .fire { color: var(--red-text); font-weight: 600; } #ticker .hint { color: var(--blue-text); }
+#words { display: none; }
 
-  .ticker { grid-column: 1 / -1; font-size: 12px; color: var(--dim); display: flex; flex-direction: column-reverse; gap: 2px; max-height: 120px; overflow: hidden; }
-  .ticker .hint { color: #74c7ff; } .ticker .fire { color: var(--hot); }
+/* money panel */
+.money { background: var(--sheet); border: 3px solid var(--line); box-shadow: 9px 9px 0 var(--hard); padding: 22px 22px 24px; margin-top: 6px; }
+.money h2:first-child { margin-top: 0; }
+#tug { position: relative; height: 34px; border: 3px solid var(--line); background: repeating-linear-gradient(-45deg, var(--yellow) 0 14px, var(--ink) 14px 28px); overflow: hidden; }
+#tug i { position: absolute; left: 0; top: 0; bottom: 0; width: 50%; background: var(--blue); border-right: 3px solid var(--ink); transition: width .3s ease-out; }
+.figs { display: grid; grid-template-columns: 1fr 1fr; margin-top: 14px; }
+.figs .k { color: var(--soft); } .figs .r { text-align: right; }
+.figs .v { font: 800 34px/1 var(--cond); margin-top: 4px; }
+#pool { color: var(--blue-text); }
+.stats { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 16px; color: var(--soft); }
+.stats b { color: var(--text); font-weight: 600; }
+#mines { display: flex; flex-direction: column; gap: 14px; }
+.mine { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 64px; border: 3px solid var(--ink); padding: 8px 10px; }
+.mine.armed { background: repeating-linear-gradient(-45deg, var(--yellow) 0 18px, var(--ink) 18px 36px); }
+.mine.armed .tag { background: #FFFFFF; color: #14121A; border: 3px solid #14121A; padding: 4px 10px; font-weight: 600; }
+.mine.armed .stake { text-align: right; line-height: 1.05; background: #FFFFFF; color: #14121A; border: 3px solid #14121A; padding: 4px 10px; transform: rotate(-1.5deg); }
+.mine.armed .stake b { display: block; font: 800 24px/1 var(--cond); }
+.mine.armed .stake small { font-size: 12px; font-weight: 600; }
+.mine.fired { background: #FFFFFF; color: #14121A; box-shadow: 5px 5px 0 var(--red); }
+.mine.fired .word { font: 800 24px/1 var(--cond); color: #D4183A; }
+.mine.fired .stake { text-align: right; line-height: 1.05; }
+.mine.fired .stake b { display: block; font: 800 24px/1 var(--cond); }
+.mine.fired .stake small { font-size: 12px; color: #4A4658; font-weight: 500; }
+.mine.summary { background: #FFFFFF; color: #14121A; box-shadow: 5px 5px 0 var(--red); font-weight: 600; }
+.mine .yours { position: absolute; top: -12px; left: 12px; background: var(--blue); color: #fff; font-size: 11px; font-weight: 600; padding: 1px 7px; border: 2px solid var(--ink); }
+.caption { color: var(--soft); margin: 18px 0 16px; font-size: 14px; }
+#plantToggle { display: block; width: 100%; max-width: 340px; padding: 14px 18px; background: var(--yellow); color: #14121A; border: 3px solid #14121A; box-shadow: 5px 5px 0 var(--hard); font: 600 16px var(--sans); cursor: pointer; }
+#plantToggle[aria-expanded="true"] { transform: translate(2px, 2px); box-shadow: 3px 3px 0 var(--hard); }
+.plant { display: none; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.plant.open { display: grid; }
+.plant label { display: grid; gap: 4px; font-size: 13px; color: var(--soft); }
+.plant input { font: 500 15px var(--sans); background: #FFFFFF; color: #14121A; border: 3px solid #14121A; padding: 8px 10px; width: 100%; }
+#pBtn { grid-column: 1/-1; padding: 12px; background: var(--red); color: #14121A; border: 3px solid #14121A; box-shadow: 5px 5px 0 var(--hard); font: 600 15px var(--sans); cursor: pointer; }
+#pMsg { grid-column: 1/-1; font-size: 13px; color: var(--soft); min-height: 1.2em; }
+.stakelink { display: block; margin-top: 16px; font-weight: 600; }
 
-  .boom-overlay { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; background: radial-gradient(circle, #ff3b4e55, transparent 65%); }
-  .boom-overlay.on { animation: boom 1.8s ease-out; }
-  .boom-overlay div { text-align: center; font: 64px var(--display); color: #fff; text-shadow: 0 0 30px var(--hot); }
-  .boom-overlay small { display: block; font: 18px var(--mono); color: #ffd1d6; text-shadow: none; }
-  /* several mines on one word: bigger, longer, brighter */
-  .boom-overlay.multi { background: radial-gradient(circle, #ff3b4ecc, #ffb02055 40%, transparent 70%); }
-  .boom-overlay.multi.on { animation: boom 2.8s ease-out; }
-  .boom-overlay.multi div { font-size: 96px; color: var(--fuse); text-shadow: 0 0 40px var(--hot), 0 0 80px var(--fuse); }
-  .boom-overlay.multi small { font-size: 24px; color: #fff; }
-  .boom-overlay.multi .stack { font: 32px var(--display); color: #fff; }
-  @keyframes boom { 0% { opacity: 0; transform: scale(.7); } 12% { opacity: 1; transform: scale(1.05); } 80% { opacity: 1; } 100% { opacity: 0; } }
-  body.shake { animation: shake .4s; }
-  @keyframes shake { 20%,60% { transform: translate(-8px, 3px); } 40%,80% { transform: translate(8px, -3px); } }
+/* end plate */
+#end { display: none; margin: 10px 0 22px; padding: 22px 26px; background: #FFFFFF; color: #14121A; border: 3px solid #14121A; box-shadow: 8px 8px 0 var(--hard); }
+#end.show { display: block; }
+#end .t { font: 800 40px/1 var(--cond); display: block; margin-bottom: 6px; }
+#end.escaped .t { color: #2D5BFF; } #end.dead .t { color: #FF2E4C; }
 
-  details { margin-top: 12px; }
-  summary { cursor: pointer; color: var(--mine); }
-  .plant { display: grid; gap: 8px; margin-top: 10px; }
-  input, button { font: inherit; background: #0f0d15; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
-  button { background: var(--mine); color: #120c25; font-weight: 600; cursor: pointer; border: 0; }
-  .end { grid-column: 1/-1; text-align: center; font: 34px var(--display); padding: 18px; display: none; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } .board { flex-wrap: wrap; } .tile { min-width: 30%; } }
+/* ---------- seats (optional state.seats / state.room) ---------- */
+#seatBlock { margin-bottom: 18px; }
+#seatBlock[hidden] { display: none; }
+#seats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.seat { height: 48px; display: grid; place-items: center; padding: 0 8px; font: 600 18px/1 var(--cond); text-align: center; border: 3px solid var(--ink); position: relative; }
+.seat.human { background: #FFFFFF; color: #14121A; box-shadow: 5px 5px 0 var(--blue); }
+.seat.human.you { background: var(--yellow); }
+.seat.bot { background: var(--sheet); color: var(--soft); border: 3px dashed var(--line); }
+.seat.open { background: transparent; color: var(--soft); border: 3px dashed var(--line); font: 500 13px/1.1 var(--sans); }
+.seat.stamp { animation: stamp .15s var(--snap); }
+.seat.flipseat { animation: flipy .2s var(--snap); }
+@keyframes flipy { 0% { transform: rotateY(90deg); } 100% { transform: rotateY(0); } }
+.seatrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+.btn { font: 600 15px var(--sans); padding: 10px 16px; border: 3px solid #14121A; background: var(--yellow); color: #14121A; box-shadow: 5px 5px 0 var(--hard); cursor: pointer; }
+.btn.outline { background: var(--sheet); color: var(--text); border-color: var(--line); box-shadow: none; font-size: 13px; padding: 7px 12px; }
+.btn.text { background: none; border: 0; box-shadow: none; color: var(--blue-text); text-decoration: underline; padding: 6px 2px; }
+.btn:active { transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--hard); }
+.private { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.private button { width: 46px; height: 26px; border: 3px solid var(--line); background: var(--sheet); position: relative; cursor: pointer; padding: 0; }
+.private button::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: var(--soft); transition: transform .12s steps(2); }
+.private button[aria-pressed="true"] { background: var(--blue); } .private button[aria-pressed="true"]::after { background: #fff; transform: translateX(20px); }
+.private .help { color: var(--soft); font-size: 13px; }
+#seatMsg { color: var(--soft); font-size: 13px; margin-top: 8px; min-height: 1.2em; }
+
+/* ---------- safe card + shield ---------- */
+.card.safe { border-color: #2D5BFF; box-shadow: 5px 5px 0 #2D5BFF; }
+.card.safe .w::before, .mini.safe .w::before { content: ""; display: inline-block; width: .72em; height: .8em; margin-right: .22em; vertical-align: -.08em;
+  background: #2D5BFF; clip-path: polygon(50% 0, 100% 18%, 100% 55%, 50% 100%, 0 55%, 0 18%); }
+.card.safe .risk { color: #2D5BFF; }
+.card.safe .bar { display: none; }
+.card.safe.poppy .w::before { animation: shieldpop .18s var(--snap); }
+@keyframes shieldpop { 0% { transform: scale(0); } 70% { transform: scale(1.2); } 100% { transform: scale(1); } }
+.card.blueshadow:not(.safe) { box-shadow: 5px 5px 0 #2D5BFF; }
+.card.blueflash { animation: blueflash .16s steps(2, jump-none); }
+@keyframes blueflash { from { box-shadow: 5px 5px 0 #2D5BFF; background-color: #2D5BFF; } to { background-color: #FFFFFF; } }
+#shieldTag { display: none; position: absolute; top: -16px; right: -14px; background: #2D5BFF; color: #FFFFFF; border: 3px solid #14121A; padding: 4px 10px; font: 600 15px var(--sans); transform: rotate(4deg); }
+.strip.shielded #shieldTag { display: block; }
+#shieldTag.slam { animation: tagslam .16s var(--snap); }
+@keyframes tagslam { 0% { transform: rotate(4deg) scale(2); } 100% { transform: rotate(4deg) scale(1); } }
+#shieldLine { margin: 10px 0 0; color: var(--blue-text); font-weight: 600; }
+#shieldLine[hidden] { display: none; }
+
+/* ---------- up next ---------- */
+#upNext[hidden] { display: none; }
+#upNext .cap { color: var(--soft); margin: -4px 0 8px; }
+#nextPrompt { font: 600 22px/1.2 var(--cond); color: var(--soft); margin: 0 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#nextHand { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 10px; }
+.mini { min-height: 64px; padding: 8px 9px; background: rgba(255, 255, 255, .85); color: #14121A; border: 2px dashed #14121A; font: 800 17px/1 var(--cond); cursor: default; }
+.mini .w { display: block; overflow-wrap: anywhere; hyphens: auto; }
+.mini .risk { display: block; font: 600 10px/1.2 var(--sans); margin-top: 5px; color: #14121A; min-height: 12px; }  /* ink, not blue: 85% white over the dark board drops blue below 4.5:1 */
+.mini.safe { border: 2px solid #2D5BFF; }
+.mini.tap { cursor: pointer; }
+.mini.tap:focus-visible { outline: 3px solid var(--blue); }
+#upNext.fadein { animation: fadein .2s steps(4) both; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 760px) { #seats { grid-template-columns: 1fr 1fr; } .seatrow .btn:not(.text):not(.outline) { width: 100%; } }
+
+/* ---------- boom overlay ---------- */
+#boom { position: fixed; inset: 0; z-index: 50; display: none; pointer-events: none; overflow: hidden; contain: layout paint; }
+#boom.on { display: block; }
+#boom .impact { position: absolute; inset: 0; background: var(--yellow); opacity: 0; }
+#boom .flash { position: absolute; inset: 0; background: var(--yellow); opacity: 0; }
+#boom .lines { position: absolute; left: 50%; top: 50%; width: 260vmax; height: 260vmax; margin: -130vmax 0 0 -130vmax; opacity: 0;
+  background: repeating-conic-gradient(from 0deg, var(--ink) 0deg .55deg, transparent .55deg 4.5deg);
+  -webkit-mask: radial-gradient(circle, transparent 11%, #000 12%); mask: radial-gradient(circle, transparent 11%, #000 12%); }
+#boom .plate { position: absolute; left: 50%; top: 42%; width: min(640px, 88vw); transform: translate(-50%, -50%) rotate(-2deg); background: #FFFFFF; color: #14121A; border: 5px solid #14121A; box-shadow: 12px 12px 0 #FF2E4C; padding: 30px 26px 26px; text-align: center; opacity: 0; }
+#boom.multi .plate { box-shadow: 24px 24px 0 #FF2E4C; }
+#boomText .cut { font-size: clamp(56px, 11vw, 110px); gap: 10px; justify-content: center; }
+#boomText .cut .ltr { border-width: 4px; min-width: .95em; height: 1.2em; }
+#boomText .stack { display: block; font: 800 34px/1.1 var(--cond); margin-top: 16px; }
+#boomText small { display: block; font: 500 17px/1.3 var(--sans); color: #4A4658; margin-top: 8px; }
+#boom.on .impact { animation: impact .16s steps(2, jump-none) both; }
+#boom.on .flash { animation: flash 2.5s steps(1, end) both; }
+#boom.on .lines { animation: burst .15s var(--snap) .08s both, spin 180s linear .23s infinite, lineout .25s steps(4) 2.25s forwards; }
+#boom.on .plate { animation: slam .18s var(--snap) .1s both, drop .2s ease-in 1.9s forwards; }
+#boom.on .ltr { animation: land .16s var(--snap) both; }
+#boom.multi.on .stack { animation: stamp .15s var(--snap) .45s both, wobble .2s steps(4) .6s; }
+@keyframes impact { 0% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes flash { 0% { opacity: 0; } 6% { opacity: .93; } 90% { opacity: .93; } 100% { opacity: 0; } }
+@keyframes burst { from { opacity: 1; transform: scale(.6); } to { opacity: 1; transform: scale(1); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes lineout { to { opacity: 0; } }
+@keyframes slam { 0% { opacity: 1; transform: translate(-50%, -50%) rotate(-2deg) scale(2); } 60% { opacity: 1; transform: translate(-50%, -50%) rotate(-2deg) scale(.95); } 100% { opacity: 1; transform: translate(-50%, -50%) rotate(-2deg) scale(1); } }
+@keyframes drop { to { opacity: 0; transform: translate(-50%, calc(-50% + 30px)) rotate(-2deg); } }
+@keyframes land { 0% { opacity: 0; transform: scale(1.8) rotate(12deg); } 100% { opacity: 1; } }
+@keyframes stamp { 0% { opacity: 0; transform: scale(1.8); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes wobble { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+/* The script toggles body.shake; the motion lives on .wrap so body never gets a transform
+   (a transformed body would become the containing block of the fixed boom overlay). */
+body.shake .wrap { animation: shake .3s steps(6); }
+@keyframes shake { 0% { transform: translate(0); } 20% { transform: translate(-9px, 4px); } 40% { transform: translate(8px, -5px); } 60% { transform: translate(-6px, 3px); } 80% { transform: translate(5px, -2px); } 100% { transform: translate(0); } }
+
+/* ---------- event effects ---------- */
+#spark.idle::before, #spark.idle::after { animation: sparkspin 1s steps(8) infinite, sparksize .5s steps(1) infinite alternate; }
+@keyframes sparkspin { to { transform: rotate(360deg); } }
+@keyframes sparksize { from { scale: 1; } to { scale: .82; } }
+#spark.idle::before { animation-name: sparkspin, sparksizeink; }
+@keyframes sparksizeink { from { scale: 1.12; } to { scale: .94; } }
+#fuseSec.low { animation: jitter .4s steps(4) infinite; }
+@keyframes jitter { 25% { transform: translate(-2px, 1px); } 50% { transform: translate(2px, -1px); } 75% { transform: translate(-1px, -2px); } }
+#fuseSec.bounce { animation: bounce .15s var(--snap); }
+@keyframes bounce { 0% { transform: translateY(6px); } 100% { transform: translateY(0); } }
+.card.snap { animation: snapup .08s ease-out both; }
+@keyframes snapup { to { transform: translateY(-10px) scale(1.08); } }
+.card.gap { transition: transform .2s var(--snap); }
+.flyer { position: fixed; z-index: 40; margin: 0; pointer-events: none; }
+.flyer .trail { position: absolute; right: 100%; top: 30%; width: 44px; height: 24px; margin-right: 8px;
+  background: linear-gradient(var(--ink) 0 0) 0 0/100% 3px no-repeat, linear-gradient(var(--ink) 0 0) 0 50%/70% 3px no-repeat, linear-gradient(var(--ink) 0 0) 0 100%/85% 3px no-repeat; }
+#bubble .w.landed { animation: squash .06s steps(1, end) both; }
+@keyframes squash { 0% { transform: scaleY(.9); } 100% { transform: none; } }
+#hand .wipe { position: absolute; inset: 0; z-index: 2; pointer-events: none; background: radial-gradient(var(--ink) 1.6px, transparent 1.9px) 0 0/10px 10px; animation: wipe .3s linear both; }
+@keyframes wipe { 0% { clip-path: inset(0 100% 0 0); } 40% { clip-path: inset(0 60% 0 0); } 100% { clip-path: inset(0 0 0 100%); } }
+.card.pop .risk, .card.pop .bar { animation: pop .15s var(--snap) both; animation-delay: var(--d, 0ms); }
+@keyframes pop { 0% { transform: scale(0); } 70% { transform: scale(1.15); } 100% { transform: scale(1); } }
+.card.hotflash { animation: hotflash .16s steps(2, jump-none); }
+@keyframes hotflash { from { background-color: #FF2E4C; } to { background-color: #FFFFFF; } }
+.mine.slam { animation: slamin .18s var(--snap); }
+@keyframes slamin { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+.money.bump { animation: bump .18s steps(2, jump-none); }
+@keyframes bump { 50% { transform: translateY(3px); } }
+.strip.flipin { animation: flipin .15s var(--snap) both, squash .06s steps(1, end) .15s both; transform-origin: left center; }
+@keyframes flipin { from { transform: rotate(-1deg) perspective(800px) rotateX(90deg); } to { transform: rotate(-1deg) perspective(800px) rotateX(0); } }
+.strip.flipout { animation: flipout .12s ease-in both; position: absolute; }
+@keyframes flipout { to { transform: rotate(-1deg) perspective(800px) rotateX(90deg); opacity: 0; } }
+.seg.just { animation: fill .24s steps(4) both; }
+@keyframes fill { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+.card.slash::after { animation: slash .15s steps(3) both; }
+@keyframes slash { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+#end.show { animation: stamp .16s var(--snap) both; }
+#tug.sweep i { transition: width .5s var(--snap); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }
+  #boom.on .flash { animation: none; opacity: 1; }
+  #boom.on .plate { animation: rmfade 2.2s steps(1, end) both; }
+  @keyframes rmfade { 0% { opacity: 1; } 90% { opacity: 1; } 100% { opacity: 0; } }
+  #boom.on .lines, #boom.on .impact { display: none; }
+  body.shake { animation: none; }
+  #spark.idle::before, #spark.idle::after { animation: none; }
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 1000px) { .grid { grid-template-columns: minmax(0, 1fr) 340px; column-gap: 24px; } }
+@media (max-width: 760px) {
+  .wrap { padding: 0 16px 24px; }
+  .grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "left" "right" "foot"; }
+  .right { margin-top: 20px; } .foot { margin-top: 20px; }
+  .fuse { gap: 14px; margin: 14px 0 20px; }
+  .track { height: 36px; } #rope { height: 14px; } #spark { width: 40px; height: 40px; margin: -20px 0 0 -20px; }
+  #fuseSec { font-size: 54px; } .fuselabel { font-size: 13px; }
+  #prompt { font-size: 30px; } .strip { padding: 14px 18px; box-shadow: 6px 6px 0 var(--hard); }
+  #hand { grid-template-columns: 1fr 1fr; gap: 16px 14px; } .card { min-height: 92px; padding: 12px 14px; } .card .w { font-size: 22px; }
+  #bubble .w { font-size: 26px; padding: 12px 18px; } #bubble .cut { font-size: 28px; }
+  .money { padding: 18px 16px 20px; box-shadow: 6px 6px 0 var(--hard); }
+  .figs .v { font-size: 30px; }
+  #plantToggle { max-width: none; }
+  .plant { grid-template-columns: 1fr; }
+  .wordmark { font-size: 26px; }
+  #boom .plate { padding: 22px 16px 20px; } #boomText .stack { font-size: 26px; }
+}
 </style>
 </head>
 <body>
+<div class="wrap">
 <header>
-  <div class="logo">WORD<b>TRAP</b></div><span class="live" id="live">LIVE</span>
-  <span class="meta" id="meta">connecting…</span>
+  <div class="wordmark">Word<b>Trap</b></div>
+  <span id="meta">Waiting for a run to start</span>
+  <span class="livewrap"><span id="live" class="off" role="img" aria-label="live"></span><span id="liveLabel">Waiting</span></span>
+  <button id="themeBtn" type="button" aria-pressed="false" aria-label="Switch to dark theme" title="Switch theme">
+    <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3a9 9 0 1 0 6 15.5A8 8 0 0 1 15 3z"/></svg>
+    <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
+  </button>
 </header>
 
-<main>
-  <section class="panel">
-    <div class="label">Fuse</div>
-    <div class="fuse"><div class="rope" id="rope"></div><div class="spark" id="spark"></div></div>
-    <div class="fuse-row"><span class="fuse-sec" id="fuseSec">--</span><span class="label" style="margin:0">fuse left · every move burns some</span></div>
+<section class="fuse" aria-label="Fuse">
+  <div class="track"><div id="rope"></div><div id="spark" class="idle"><i></i></div></div>
+  <div class="fusenum"><span id="fuseSec" aria-live="off">—</span><div class="fuselabel">fuse left</div></div>
+</section>
 
-    <div class="board" id="board"></div>
-    <div class="prompt" id="prompt">Waiting for a run…</div>
-    <div class="need" id="need"></div>
-    <div class="bubble" id="bubble"><span class="empty">Byte hasn't played a card on this tile yet.</span></div>
-    <div class="action" id="action"></div>
+<div id="end" role="status"></div>
 
-    <div class="label" style="margin-top:18px">BYTE'S HAND · the cards it can play · mine any of them</div>
-    <div class="hand" id="hand"></div>
+<main class="grid">
+  <section class="left">
+    <div class="tileno" id="tileNo">Tile — of —</div>
+    <div class="strip" id="promptStrip"><h1 id="prompt">Waiting for a run to start</h1><span id="shieldTag" aria-hidden="true">Shielded</span></div>
+    <div id="need">Byte will pick up its first hand when the run begins.</div>
 
-    <div class="label" style="margin-top:18px">Words Byte has played (on-chain)</div>
-    <div class="words" id="words"></div>
+    <h2>Cards Byte can play</h2>
+    <div id="hand"><span class="empty">No cards in hand yet.</span></div>
+    <p id="shieldLine" hidden>Two mines went off here. The rest of this tile is safe.</p>
+
+    <section id="upNext" hidden aria-label="Up next">
+      <h2>Up next</h2>
+      <p class="cap">Mine these before Byte gets there.</p>
+      <p id="nextPrompt"></p>
+      <div id="nextHand"></div>
+    </section>
+
+    <h2>Played on this tile</h2>
+    <div id="bubble"><span class="empty">Byte hasn't played a card on this tile yet.</span></div>
+    <div id="action"></div>
+    <div id="words" aria-hidden="true"></div>
   </section>
 
-  <aside>
-    <div class="panel">
-      <div class="stats">
-        <div class="stat b"><div class="label">Backer pool</div><div class="v" id="pool">$0</div></div>
-        <div class="stat m"><div class="label">Mines staked</div><div class="v" id="staked">$0</div></div>
-        <div class="stat"><div class="label">Mines fired</div><div class="v" id="firedN">0</div></div>
-        <div class="stat"><div class="label">x402 hints</div><div class="v" id="hints">0</div></div>
+  <aside class="right">
+    <div class="money" id="money">
+      <div id="seatBlock" hidden>
+        <h2 style="margin-top:0">Seats</h2>
+        <div id="seats" role="list" aria-label="Seats"></div>
+        <div class="seatrow" id="seatActions"></div>
+        <div class="private" id="privateRow" hidden><button type="button" id="privateBtn" aria-pressed="false" aria-label="Private room"></button><span><b>Private room</b><br><span class="help">Only people with the link can join.</span></span></div>
+        <div id="seatMsg" aria-live="polite"></div>
       </div>
-      <div class="label" style="margin-top:12px">Score</div>
-      <div class="stat"><div class="v" id="score">0</div></div>
-    </div>
-    <div class="panel" style="margin-top:14px">
-      <div class="label">Hidden mines (sha256 commitments)</div>
-      <div class="label" style="text-transform:none;letter-spacing:0;color:var(--mine)">mines arm next turn · a challenge only disarms what's already live</div>
-      <div class="mines" id="mines"></div>
-      <div class="label" style="text-transform:none;letter-spacing:0;margin-top:10px"><a id="stakeLink" href="/stake/" target="_blank" rel="noreferrer" style="color:var(--safe)">Stake with fiat (Google sign-in via Pollar) ↗</a></div>
-      <details>
-        <summary>Plant a mine (demo — mobile app does this with MWA)</summary>
-        <div class="plant">
-          <input id="pName" placeholder="your handle" value="you" />
-          <input id="pWord" placeholder="a card from Byte's hand…" />
-          <input id="pStake" type="number" step="0.05" min="0.05" value="0.25" />
-          <button id="pBtn">Arm mine</button>
-          <div id="pMsg" class="label" style="text-transform:none"></div>
-        </div>
-      </details>
+      <h2>Who's winning the money</h2>
+      <div id="tug" role="img" aria-label="Backers versus mines"><i style="width:50%"></i></div>
+      <div class="figs">
+        <div><div class="k">Backing Byte</div><div class="v" id="pool">$0.00</div></div>
+        <div class="r"><div class="k">Armed on mines</div><div class="v" id="staked">$0.00</div></div>
+      </div>
+      <div class="stats"><span>Mines fired <b id="firedN">0</b></span><span>Hints bought <b id="hints">0</b></span><span>Score <b id="score">0</b></span></div>
+
+      <h2>Mines on the board</h2>
+      <div id="mines"><div class="empty">No mines armed yet. The crowd is quiet.</div></div>
+      <p class="caption">Mines arm next turn. A challenge only disarms what's already live. The crowd can re-mine a word afterwards.</p>
+
+      <button id="plantToggle" type="button" aria-expanded="false" aria-controls="plantPanel">Plant a mine on a word</button>
+      <div class="plant" id="plantPanel">
+        <label>Your handle<input id="pName" value="you" autocomplete="nickname" /></label>
+        <label>Stake in dollars<input id="pStake" type="number" step="0.05" min="0.05" value="0.25" /></label>
+        <label style="grid-column:1/-1">A card from Byte's hand<input id="pWord" placeholder="coffee" autocomplete="off" /></label>
+        <button id="pBtn" type="button">Arm the mine</button>
+        <div id="pMsg" aria-live="polite"></div>
+      </div>
+      <a id="stakeLink" class="stakelink" href="/stake/" target="_blank" rel="noreferrer">or stake with a Pollar wallet</a>
     </div>
   </aside>
 
-  <div class="end panel" id="end"></div>
-  <div class="ticker" id="ticker"></div>
+  <section class="foot">
+    <div id="board" aria-label="Progress"></div>
+    <div id="ticker" aria-live="polite"></div>
+  </section>
 </main>
+</div>
 
-<div class="boom-overlay" id="boom"><div id="boomText"></div></div>
+<div id="boom" aria-hidden="true"><div class="flash"></div><div class="lines"></div><div class="impact"></div><div class="plate"><div id="boomText"></div></div></div>
 
 <script type="module">
 // Spectator page for one run. Polls GET /runs/:id/spectate on a plain interval — it must keep
@@ -184,89 +448,177 @@ const sha = async (...parts) => {
 const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 const mockKey = (name) => sha(enc.encode("mockkey:" + name));
 
+// ---- presentation helpers (no game logic) ----
+const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+const cutout = (word) => `<span class="cut">${[...word].map((ch, i) => `<span class="ltr c${i % 6} f${i % 4}">${esc(ch)}</span>`).join("")}</span>`;
+const prose = { play_word: "Play word", buy_hint: "Buy hint", defuse_tile: "Defuse tile", challenge_word: "Challenge", pass_turn: "Pass" };
+let prev = null;                       // previous state, for event-driven effects
+const counters = new Map();            // id -> running tween
+
+// Optional state this build's server does not send yet; the UI hides each block when absent.
+//   state.seats:    [{ name, kind: "human" | "bot" | "open", you?: boolean }]  (4 entries)
+//   state.room:     { code, host: boolean, private: boolean }
+//   state.safe:     the one hand word that is a safe card
+//   state.next:     { prompt, hand: string[], safe?: string }   (the tile after this one)
+//   state.shielded: true once two mines went off on this tile
+// ?demo=seats|shield|all overlays design fixtures so the blocks can be reviewed before the server ships them.
+const DEMO = new URLSearchParams(location.search).get("demo");
+function withDemo(s) {
+  if (!DEMO) return s;
+  const d = structuredClone(s);
+  if (DEMO === "seats" || DEMO === "all") {
+    d.seats = [{ name: "You", kind: "human", you: true }, { name: "Bot", kind: "bot" }, { name: "Bot", kind: "bot" }, { name: "Bot", kind: "bot" }];
+    d.room = { code: d.matchId, host: true, private: false };
+    d.safe = d.hand[1];
+  }
+  if (DEMO === "shield" || DEMO === "all") {
+    d.shielded = true;
+    d.safe = d.hand[0];
+    const nt = d.tiles[d.position + 1];
+    d.next = { prompt: nt?.prompt ?? "Name the colors of a rainbow", hand: ["crimson", "amber", "lime", "teal", "lavender", "red", "orange", "violet"], safe: "teal" };
+  }
+  return d;
+}
+const shield = `<svg class="shield" viewBox="0 0 20 22" width="12" height="13" aria-hidden="true"><path d="M10 1 19 4.5V11c0 5-4 8.5-9 10-5-1.5-9-5-9-10V4.5z" fill="#2D5BFF"/></svg>`;
+function seatLabel(seat, i) {
+  return seat.kind === "open" ? `Seat ${i + 1}, open` : seat.kind === "bot" ? `Seat ${i + 1}, bot` : `Seat ${i + 1}, taken by ${seat.you ? "you" : seat.name}`;
+}
+function renderSeats(s) {
+  const block = $("seatBlock");
+  if (!s.seats) { block.hidden = true; return; }
+  block.hidden = false;
+  const me = s.seats.some((x) => x.you);
+  const free = s.seats.some((x) => x.kind === "open");
+  $("seats").innerHTML = s.seats.map((seat, i) =>
+    `<div class="seat ${seat.kind}${seat.you ? " you" : ""}" role="listitem" tabindex="0" data-kind="${seat.kind}" data-seat="${i}" aria-label="${esc(seatLabel(seat, i))}">${seat.kind === "open" ? "Open seat" : seat.kind === "bot" ? "Bot" : esc(seat.you ? "You" : seat.name)}</div>`).join("");
+  $("seatActions").innerHTML = (free && !me ? `<button type="button" class="btn" id="takeSeat">Take a seat</button>` : "")
+    + `<button type="button" class="btn outline" id="copyLink">Copy room link</button>`
+    + (me ? `<button type="button" class="btn text" id="leaveSeat">Leave seat</button>` : "")
+    + (!free && !me ? `<span class="empty">Seats are full. You can still back Byte.</span>` : "");
+  $("privateRow").hidden = !s.room?.host;
+  $("privateBtn").setAttribute("aria-pressed", String(!!s.room?.private));
+}
+function miniCard(w, safe, tap) {
+  return `<div class="mini${w === safe ? " safe" : ""}${tap ? " tap" : ""}" data-word="${esc(w)}"${tap ? ' tabindex="0" role="button" aria-label="Copy ' + esc(w) + ' into the planter"' : ""}><span class="w">${esc(w)}</span><span class="risk">${w === safe ? "Safe card" : ""}</span></div>`;
+}
+
 function render() {
   if (!state) return;
-  const s = state;
-  $("meta").textContent = `run ${s.matchId}${s.callsign ? " · " + s.callsign : ""} · turn ${s.turn} · ${s.status}`;
+  const s = withDemo(state);
+  renderSeats(s);
+  $("promptStrip").classList.toggle("shielded", !!s.shielded);
+  $("shieldLine").hidden = !s.shielded;
+  if (s.next && s.status === "live") {
+    $("upNext").hidden = false;
+    $("nextPrompt").textContent = s.next.prompt;
+    const tap = !!s.seats?.some((x) => x.you);
+    $("nextHand").innerHTML = s.next.hand.map((w) => miniCard(w, s.next.safe, tap)).join("");
+  } else $("upNext").hidden = true;
+  const who = s.callsign || "Byte";
+  $("meta").textContent = s.status === "live" ? `${who} is playing, turn ${s.turn}` : `${who} finished on turn ${s.turn}`;
   $("stakeLink").href = `/stake/?run=${encodeURIComponent(s.matchId)}`;
-  $("live").className = "live" + (s.status === "live" ? "" : " off");
-  $("live").textContent = s.status === "live" ? "LIVE" : "OVER";
+  $("live").className = s.status === "live" ? "" : "off";
+  $("liveLabel").textContent = s.status === "live" ? "Live" : "Over";
   const pct = Math.max(0, s.fuse / s.fuseTotal) * 100;
   $("rope").style.width = pct + "%";
   $("spark").style.left = pct + "%";
+  $("spark").className = s.status === "live" ? "idle" : "";
   $("fuseSec").textContent = s.fuse;
-  $("fuseSec").className = "fuse-sec" + (s.fuse <= 30 ? " low" : "");
+  $("fuseSec").className = s.fuse <= 30 && s.status === "live" ? "low" : "";
+  document.body.classList.toggle("danger", s.fuse <= 30 && s.status === "live");
 
-  $("board").innerHTML = s.tiles.map((t, i) =>
-    `<div class="tile ${t.cleared ? "cleared" : ""} ${i === s.position ? "here" : ""}">${i + 1}. ${esc(t.prompt)}</div>`).join("") +
-    `<div class="tile exit ${s.position >= s.tiles.length ? "here" : ""}">EXIT</div>`;
   const tile = s.tiles[s.position];
-  $("prompt").textContent = tile?.prompt ?? "EXIT REACHED";
-  $("need").textContent = tile ? `needs ${tile.needed} card${tile.needed === 1 ? "" : "s"} · ${tile.played.length} played` : "";
+  $("tileNo").textContent = tile ? `Tile ${s.position + 1} of ${s.tiles.length}` : `All ${s.tiles.length} tiles done`;
+  $("board").innerHTML = s.tiles.map((t, i) =>
+    `<div class="seg ${t.cleared ? "done" : ""} ${i === s.position ? "here" : ""}" title="${esc(t.prompt)}"></div>`).join("") +
+    `<div class="seg exit">Exit</div>`;
+  $("prompt").textContent = tile?.prompt ?? (s.status === "escaped" ? "Byte reached the exit" : "The run is over");
+  $("need").textContent = tile
+    ? `Needs ${tile.needed} card${tile.needed === 1 ? "" : "s"} to clear, ${tile.played.length === 0 ? "none" : tile.played.length} played so far`
+    : "";
 
   const boomWords = new Set(s.traps.filter((t) => t.word).map((t) => t.word));
   for (const w of boomWords) fired.add(w);
   const ch = new Set(s.challenged.map((c) => c.word));
 
-  // speech bubble = the cards played on this tile (no narration: Byte talks on its own stream)
+  // "Played on this tile" (no narration: Byte talks on its own stream)
   $("bubble").innerHTML = tile && tile.played.length
-    ? tile.played.map((w) => `<span class="w ${fired.has(w) ? "boom" : ""}">${esc(w)}</span>`).join("")
+    ? tile.played.map((w) => fired.has(w) ? `<span class="w boom" data-word="${esc(w)}">${cutout(w)}</span>` : `<span class="w" data-word="${esc(w)}">${esc(w)}</span>`).join("")
     : `<span class="empty">${tile ? "Byte hasn't played a card on this tile yet." : "Byte made it out."}</span>`;
 
   $("hand").innerHTML = s.hand.map((w) => {
     const r = s.hint?.[w];
-    const cls = fired.has(w) ? " boom" : ch.has(w) ? " ch" : (r ?? 0) >= 0.6 ? " hot" : "";
-    return `<div class="card${cls}">${esc(w)}<span class="risk">${r === undefined ? "&nbsp;" : "risk " + Math.round(r * 100) + "%"}</span></div>`;
-  }).join("") || `<span class="empty" style="color:var(--dim)">no cards</span>`;
+    const safe = w === s.safe;                       // a safe card never takes the red treatment
+    const cls = safe ? " safe" : fired.has(w) ? " boom" : ch.has(w) ? " ch" : (r ?? 0) >= 0.6 ? " hot" : "";
+    const risk = safe ? "Safe card" : ch.has(w) ? "challenged" : r === undefined ? "" : `${Math.round(r * 100)}% mine risk`;
+    const bar = safe || ch.has(w) || r === undefined ? "" : `<span class="bar" style="width:${Math.max(4, Math.round(r * 100))}%"></span>`;
+    return `<div class="card${cls}${s.shielded ? " blueshadow" : ""}" data-word="${esc(w)}"><span class="w">${esc(w)}</span><span class="risk">${risk}</span>${bar}</div>`;
+  }).join("") || `<span class="empty">${tile ? "No cards left in hand." : "No cards in hand."}</span>`;
 
   const uniq = [...new Map(s.spoken.map((w) => [w.word, w])).keys()];
   $("words").innerHTML = uniq.slice(-80).map((w) => `<span class="chip ${fired.has(w) ? "boom" : ""}">${esc(w)}</span>`).join("") +
     [...ch].map((w) => `<span class="chip ch" title="challenged">${esc(w)}</span>`).join("");
 
-  $("pool").textContent = fmt(s.backerTotal);
-  $("staked").textContent = fmt(s.trapTotal);
-  $("firedN").textContent = s.traps.filter((t) => t.status === "fired").length;
+  setFigure("pool", s.backerTotal, fmt);
+  setFigure("staked", s.trapTotal, fmt);
+  const firedTraps = s.traps.filter((t) => t.status === "fired");
+  $("firedN").textContent = firedTraps.length;
   $("hints").textContent = `${s.hintsBought}`;
-  $("score").textContent = s.score;
-  $("mines").innerHTML = [...s.traps].reverse().map((t) =>
-    `<div class="mine ${t.status}"><span class="hash">${t.word ? "💥 " + esc(t.word.toUpperCase()) : "▒▒▒▒▒▒ " + esc(t.id.slice(0, 6))}</span><span>${fmt(t.stake)} · T${t.armedTurn}${mySecrets.has(t.id) ? " · yours" : ""}</span></div>`).join("");
+  setFigure("score", s.score, (n) => String(Math.round(n)));
+  const total = s.backerTotal + s.trapTotal;
+  $("tug").querySelector("i").style.width = (total > 0 ? (100 * s.backerTotal) / total : 50) + "%";
+
+  const armed = [...s.traps].reverse().filter((t) => t.status === "armed");
+  const firedRows = [...firedTraps].reverse();
+  const yours = (t) => mySecrets.has(t.id) ? `<span class="yours">yours</span>` : "";
+  const armedHtml = armed.map((t) =>
+    `<div class="mine armed" data-id="${esc(t.id)}">${yours(t)}<span class="tag">Sealed</span><span class="stake"><b>${fmt(t.stake)}</b><small>${t.armedTurn <= s.turn ? "live now" : `live from turn ${t.armedTurn}`}</small></span></div>`).join("");
+  const firedHtml = firedRows.length >= 8
+    ? `<div class="mine summary" data-id="summary">${firedRows.length} mines fired, ${fmt(firedRows.reduce((n, t) => n + t.stake, 0))} in stakes paid out</div>`
+    : firedRows.map((t) =>
+      `<div class="mine fired" data-id="${esc(t.id)}">${yours(t)}<span class="word">${esc(t.word)}</span><span class="stake"><b>${fmt(t.stake)}</b><small>paid out to ${esc(t.setter || "a viewer")}</small></span></div>`).join("");
+  $("mines").innerHTML = armedHtml + firedHtml || `<div class="empty">No mines armed yet. The crowd is quiet.</div>`;
 
   if (s.status !== "live") {
-    $("end").style.display = "block";
+    $("end").className = `show ${s.status}`;
     $("end").innerHTML = s.status === "escaped"
-      ? `<span style="color:var(--safe)">BYTE ESCAPED</span> — score ${s.score} · backers sweep the unfired mines`
-      : `<span style="color:var(--hot)">BYTE DETONATED</span> — score ${s.score} · mine setters cash out`;
-  } else $("end").style.display = "none";
+      ? `<span class="t">Byte escaped</span>Score ${s.score}. The people backing Byte split every mine that never went off.`
+      : `<span class="t">Byte detonated</span>Score ${s.score}. The mine setters cash out, and whatever is left goes to the backers.`;
+  } else { $("end").className = ""; $("end").innerHTML = ""; }
+  effects(prev, s);
+  prev = s;
   autoReveal();
 }
 
 function tick(text, cls = "") {
   const d = document.createElement("div");
-  d.className = cls; d.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  d.className = cls; d.textContent = text;
   $("ticker").prepend(d);
   while ($("ticker").children.length > 8) $("ticker").lastChild.remove();
 }
 
 function boom(word, who, payout) {
-  $("boomText").innerHTML = `BOOM<small>“${esc(word.toUpperCase())}” · ${esc(who)} +${fmt(payout)}</small>`;
+  $("boomText").innerHTML = `${cutout("Boom")}<span class="stack">“${esc(word)}”</span><small>${esc(who)} is paid ${fmt(payout)}. Byte loses 22 fuse.</small>`;
   const o = $("boom"); o.classList.remove("on", "multi"); void o.offsetWidth; o.classList.add("on");
   document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake");
 }
 // 2+ mines on the same word fired in one wave: one stacked flash with the total payout
 function multiBoom(e) {
-  $("boomText").innerHTML = `MULTI-BOOM<span class="stack">${e.count}× “${esc(e.word.toUpperCase())}”</span><small>${e.setters.map(esc).join(" + ")} split +${fmt(e.payout)} · −${e.fuseBurn} fuse</small>`;
+  const names = e.setters.map(esc);
+  const who = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+  $("boomText").innerHTML = `${cutout("Boom")}<span class="stack">${e.count} mines on “${esc(e.word)}”</span><small>${who} split ${fmt(e.payout)}. Byte loses ${e.fuseBurn} fuse.</small>`;
   const o = $("boom"); o.classList.remove("on"); void o.offsetWidth; o.classList.add("multi", "on");
   document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake");
 }
 
 function onEvent(e) {
   switch (e.type) {
-    case "action": $("action").innerHTML = `<b>${esc(e.action)}</b> · ${esc(e.detail)}`; tick(`T${e.turn} ${e.action} — ${e.detail}`); break;
-    case "hint": tick(`Byte paid $${e.costUsd} via x402 for risk scores: ${Object.entries(e.scores).map(([w, s]) => `${w} ${Math.round(s * 100)}%`).join(", ")}`, "hint"); break;
-    case "trap_planted": tick(`mine armed · ${fmt(e.trap.stake)} · live from turn ${e.trap.armedTurn}`); break;
-    case "trap_fired": fired.add(e.trap.word); if (!pendingMulti) boom(e.trap.word, e.trap.setter || "anon", e.payout); tick(`💥 ${e.trap.word.toUpperCase()} detonated · −${e.fuseBurn} fuse · paid ${fmt(e.payout)}`, "fire"); break;
-    case "multi_boom": multiBoom(e); tick(`💥💥 MULTI-BOOM · ${e.count} mines on ${e.word.toUpperCase()} · −${e.fuseBurn} fuse · paid ${fmt(e.payout)}`, "fire"); break;
-    case "match_end": tick(`RUN OVER — ${e.reason}`); break;
+    case "action": { const detail = String(e.detail).replace(/\s·\s/g, ", ").replace(/\s—\s/g, ", "); $("action").innerHTML = `<b>${esc(prose[e.action] ?? e.action)}</b> — ${esc(detail)}`; tick(`Turn ${e.turn}: ${prose[e.action] ?? e.action}, ${detail}`); break; }
+    case "hint": tick(`Byte paid $${e.costUsd} over x402 for risk scores`, "hint"); break;
+    case "trap_planted": tick(`A viewer armed ${fmt(e.trap.stake)} on a sealed word, live from turn ${e.trap.armedTurn}`); break;
+    case "trap_fired": fired.add(e.trap.word); if (!pendingMulti) boom(e.trap.word, e.trap.setter || "a viewer", e.payout); tick(`“${e.trap.word}” blew up, ${e.trap.setter || "a viewer"} is paid ${fmt(e.payout)} and Byte lost ${e.fuseBurn} fuse`, "fire"); break;
+    case "multi_boom": multiBoom(e); tick(`${e.count} mines on “${e.word}” blew up together and paid out ${fmt(e.payout)}`, "fire"); break;
+    case "match_end": tick(`The run is over: ${e.reason}`); break;
   }
 }
 
@@ -297,21 +649,201 @@ async function poll() {
   try {
     if (!runId) {
       const cur = await fetch("/api/v1/current").then((r) => r.json());
-      if (!cur.runId) { $("meta").textContent = "waiting for a run to start…"; return; }
+      if (!cur.runId) { $("meta").textContent = "Waiting for a run to start"; return; }
       runId = cur.runId;
     }
     const r = await fetch(`/runs/${runId}/spectate?after=${lastSeq}`);
-    if (!r.ok) { $("meta").textContent = `run ${runId}: ${r.status}`; return; }
+    if (!r.ok) { $("meta").textContent = `Run ${runId} is not available (${r.status})`; return; }
     const { seq, events, state: s } = await r.json();
     pendingMulti = events.some((e) => e.type === "multi_boom");   // one stacked flash instead of N small ones
+    snapshotHand();
     for (const e of events) onEvent(e);
     pendingMulti = false;
     lastSeq = seq; state = s;
     render();
-  } catch (e) { $("meta").textContent = "reconnecting…"; }
+  } catch (e) { $("meta").textContent = "Reconnecting"; }
 }
 poll();
 setInterval(poll, POLL_MS);
+
+// ---- theme toggle (persisted, inside try/catch) ----
+function syncThemeButton() {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const b = $("themeBtn");
+  b.setAttribute("aria-pressed", String(dark));
+  b.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+}
+$("themeBtn").onclick = () => {
+  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("wt.theme", next); } catch (e) { /* private mode */ }
+  syncThemeButton();
+};
+syncThemeButton();
+$("plantToggle").onclick = () => {
+  const open = $("plantPanel").classList.toggle("open");
+  $("plantToggle").setAttribute("aria-expanded", String(open));
+  if (open) $("pWord").focus();
+};
+
+// ---- seats, room link, private toggle, "Up next" taps (all presentation; the server may not have seats yet) ----
+async function seatAction(action) {
+  if (!runId) return;
+  try {
+    const r = await fetch(`/runs/${runId}/seat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 404) $("seatMsg").textContent = "Seats aren't available on this server yet. You can still back Byte.";
+    else if (!r.ok) $("seatMsg").textContent = j.error ?? "That didn't work. Try again.";
+    else $("seatMsg").textContent = action === "take" ? "You're seated. Mines you arm now count for you." : "You left your seat.";
+  } catch { $("seatMsg").textContent = "The server didn't answer. Try again in a moment."; }
+}
+$("seatActions").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.id === "takeSeat") seatAction("take");
+  if (b.id === "leaveSeat") seatAction("leave");
+  if (b.id === "copyLink") {
+    try { await navigator.clipboard.writeText(location.origin + "/watch/" + runId); b.textContent = "Link copied"; setTimeout(() => { b.textContent = "Copy room link"; }, 2000); }
+    catch { $("seatMsg").textContent = "Couldn't copy. The link is " + location.origin + "/watch/" + runId; }
+  }
+});
+$("privateBtn").onclick = async () => {
+  const next = $("privateBtn").getAttribute("aria-pressed") !== "true";
+  $("privateBtn").setAttribute("aria-pressed", String(next));
+  try {
+    const r = await fetch(`/runs/${runId}/room`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ private: next }) });
+    if (r.status === 404) $("seatMsg").textContent = "Private rooms aren't available on this server yet.";
+  } catch { /* offline */ }
+};
+$("nextHand").addEventListener("click", (e) => {
+  const m = e.target.closest(".mini.tap"); if (!m) return;
+  $("pWord").value = m.dataset.word;
+  $("plantPanel").classList.add("open"); $("plantToggle").setAttribute("aria-expanded", "true");
+  $("pMsg").textContent = `"${m.dataset.word}" is in the planter. Arm it before Byte reaches that tile.`;
+});
+$("nextHand").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("tap")) { e.preventDefault(); e.target.click(); } });
+
+// ---- effects: everything below only reacts to a change between two polled states ----
+let handRects = new Map(), nextRects = new Map();
+function snapshotHand() {
+  handRects = new Map(); nextRects = new Map();
+  for (const c of document.querySelectorAll("#hand .card")) handRects.set(c.dataset.word, c.getBoundingClientRect());
+  for (const c of document.querySelectorAll("#nextHand .mini")) nextRects.set(c.dataset.word, c.getBoundingClientRect());
+}
+function setFigure(id, value, format) {
+  const el = $(id);
+  const from = Number(el.dataset.v ?? value);
+  el.dataset.v = value;
+  if (reduced.matches || from === value || !prev) { el.textContent = format(value); return; }
+  counters.get(id)?.cancel?.();
+  const t0 = performance.now(); let raf;
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / 300);
+    el.textContent = format(from + (value - from) * k);
+    if (k < 1) raf = requestAnimationFrame(step);
+  };
+  raf = requestAnimationFrame(step);
+  counters.set(id, { cancel: () => cancelAnimationFrame(raf) });
+}
+function flyCard(word) {
+  const from = handRects.get(word);
+  const to = document.querySelector(`#bubble .w[data-word="${CSS.escape(word)}"]`);
+  if (!from || !to) return;
+  const dest = to.getBoundingClientRect();
+  const fl = document.createElement("div");
+  fl.className = "card flyer"; fl.innerHTML = `<span class="w">${esc(word)}</span><span class="trail"></span>`;
+  fl.style.cssText = `left:${from.left}px;top:${from.top}px;width:${from.width}px;height:${from.height}px;--tilt:0deg`;
+  document.body.appendChild(fl);
+  to.style.visibility = "hidden";
+  const dx = dest.left - from.left, dy = dest.top - from.top, sx = dest.width / from.width, sy = dest.height / from.height;
+  fl.animate([
+    { transform: "translate(0,0) scale(1)", offset: 0 },
+    { transform: "translate(0,-10px) scale(1.08)", offset: .19 },
+    { transform: `translate(${dx}px,${dy}px) scale(${sx},${sy})`, offset: 1 },
+  ], { duration: 430, easing: "cubic-bezier(.2,1.4,.3,1)", fill: "forwards" });
+  // Always clean up on a timer: the animation may never finish while the page is throttled,
+  // and the next poll may replace the destination element anyway.
+  const done = () => { fl.remove(); to.style.visibility = ""; to.classList.add("landed"); };
+  setTimeout(done, 480);
+}
+function closeGaps() {
+  for (const c of document.querySelectorAll("#hand .card")) {
+    const old = handRects.get(c.dataset.word); if (!old) continue;
+    const now = c.getBoundingClientRect();
+    const dx = old.left - now.left, dy = old.top - now.top;
+    if (!dx && !dy) continue;
+    c.animate([{ transform: `translate(${dx}px,${dy}px) rotate(var(--tilt,0deg))` }, { transform: "rotate(var(--tilt,0deg))" }], { duration: 200, easing: "cubic-bezier(.2,1.4,.3,1)" });
+  }
+}
+function effects(p, s) {
+  if (!p) return;
+  const rm = reduced.matches;
+  const tile = s.tiles[s.position], ptile = p.tiles[p.position];
+  const sameTile = s.position === p.position;
+  const firedNow = s.traps.filter((t) => t.status === "fired").length > p.traps.filter((t) => t.status === "fired").length;
+
+  // 2. card played
+  if (sameTile && tile && ptile && tile.played.length > ptile.played.length) {
+    const word = tile.played[tile.played.length - 1];
+    if (!rm) { flyCard(word); closeGaps(); }
+  }
+  // 6. tile cleared
+  if (!sameTile && !rm) {
+    const strip = $("promptStrip");
+    strip.classList.remove("flipin"); void strip.offsetWidth; strip.classList.add("flipin");
+    document.querySelectorAll("#board .seg.done")[p.position]?.classList.add("just");
+  }
+  // 3. hint bought
+  if (s.hintsBought > p.hintsBought) {
+    const hand = $("hand");
+    if (!rm) { const w = document.createElement("span"); w.className = "wipe"; hand.appendChild(w); w.addEventListener("animationend", () => w.remove()); setTimeout(() => w.remove(), 400); }
+    document.querySelectorAll("#hand .card").forEach((c, i) => { c.style.setProperty("--d", `${120 + i * 40}ms`); c.classList.add("pop"); if (c.classList.contains("hot")) c.classList.add("hotflash"); });
+  }
+  // 4. mine planted
+  const oldIds = new Set(p.traps.map((t) => t.id));
+  const fresh = s.traps.filter((t) => !oldIds.has(t.id));
+  if (fresh.length) {
+    for (const t of fresh) document.querySelector(`#mines .mine[data-id="${CSS.escape(t.id)}"]`)?.classList.add("slam");
+    const m = $("money"); m.classList.remove("bump"); void m.offsetWidth; m.classList.add("bump");
+  }
+  // 7. challenge
+  if (s.challenged.length > p.challenged.length) {
+    const w = s.challenged[s.challenged.length - 1].word;
+    document.querySelector(`#hand .card[data-word="${CSS.escape(w)}"]`)?.classList.add("slash");
+  }
+  // 8. fuse decrement that was not a detonation
+  if (s.fuse < p.fuse && !firedNow && !rm) { const f = $("fuseSec"); f.classList.add("bounce"); setTimeout(() => f.classList.remove("bounce"), 200); }
+  // seats: taken → stamp; bot ↔ human → flip on the vertical axis
+  if (s.seats && p.seats) {
+    s.seats.forEach((seat, i) => {
+      const was = p.seats[i];
+      const el = document.querySelector(`#seats .seat[data-seat="${i}"]`);
+      if (!el || !was || rm) return;
+      if (was.kind === "open" && seat.kind !== "open") el.classList.add("stamp");
+      else if (was.kind !== seat.kind) el.classList.add("flipseat");
+    });
+  }
+  // shield triggered: tag slams on, card shadows flash to blue
+  if (s.shielded && !p.shielded && !rm) {
+    $("shieldTag").classList.add("slam");
+    document.querySelectorAll("#hand .card").forEach((c) => c.classList.add("blueflash"));
+  }
+  // safe card dealt: the shield pops once
+  if (s.safe && s.safe !== p.safe && !rm) document.querySelector(`#hand .card.safe`)?.classList.add("poppy");
+  // tile cleared with an "Up next" row: its cards grow and slide into the hand (FLIP), the new row fades in
+  if (!sameTile && p.next && !rm) {
+    for (const c of document.querySelectorAll("#hand .card")) {
+      const from = nextRects.get(c.dataset.word); if (!from) continue;
+      const to = c.getBoundingClientRect();
+      c.animate([{ transform: `translate(${from.left - to.left}px,${from.top - to.top}px) scale(${from.width / to.width})` }, { transform: "rotate(var(--tilt,0deg))" }], { duration: 350, easing: "cubic-bezier(.2,1.4,.3,1)" });
+    }
+    const u = $("upNext"); u.classList.remove("fadein"); void u.offsetWidth; u.classList.add("fadein");
+  }
+  // 9. run end
+  if (s.status !== "live" && p.status === "live") {
+    if (s.status === "escaped") { $("tug").classList.add("sweep"); $("tug").querySelector("i").style.width = "100%"; }
+    else if (!rm && !firedNow) { document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake"); }
+  }
+}
 </script>
 </body>
 </html>

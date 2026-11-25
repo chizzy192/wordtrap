@@ -64,7 +64,8 @@ Everything below is required by app.bytearena.fun/api/game-spec. Check each item
 |---|---|---|
 | Onboarding without a wallet (Google sign-in creates a per-user wallet) | `apps/stake` runs inside `PollarProvider`; `login({ provider: "google" })` | [TESTNET] with a publishable key; demo-credit mode without one [LIVE] |
 | External Solana wallets (Wallet Standard) | `@pollar/solana-wallet-standard-adapter` in Pollar mode; raw `@wallet-standard/app` connect in demo mode | [TESTNET] / [LIVE] |
-| Fiat top-up (card, Pix, bank QR) | `openCardModal({ panel: "fund" })` → payment id → `POST /api/v1/fiat/confirm` → server verifies with the secret key, credits exactly once | [TESTNET]; live corridors per Pollar today: Bolivia bank QR, Brazil Pix, Argentina transfers (none exercised by us) |
+| Wallet top-up | Google sign-in creates a Pollar wallet; viewers stake from that wallet balance. `openCardModal({ panel: "fund" })` → payment id → `POST /api/v1/fiat/confirm` → server verifies with the secret key, credits exactly once | [TESTNET] |
+| Local-currency top-up (Pix, bank QR, bank transfer) | not available in this build; the page does not offer it | [ROADMAP] |
 | Sponsored fees / no SOL needed by the viewer | the treasury signs every on-chain plant/reveal/back; viewers hold only a ledger balance | [LIVE] on the mock chain, [TESTNET] on devnet |
 | Micro-stakes in USD | integer micro-USD ledger, `plant-fiat` from $0.10 | [LIVE] |
 | Payouts | `TrapFired` credits the owner; `settle` splits the treasury's backer share pro-rata | [LIVE] (mock) |

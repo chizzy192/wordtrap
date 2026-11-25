@@ -64,7 +64,7 @@ test("Byte Arena contract over real HTTP: start → state → bad word 400 → p
   assert.equal(watch.status, 200);
   assert.match(watch.headers.get("content-type") ?? "", /^text\/html/);
   assert.equal(watch.headers.get("content-security-policy"), FRAME_CSP);
-  assert.match(await watch.text(), /BYTE'S HAND/);
+  assert.match(await watch.text(), /Cards Byte can play/);
 
   // spec + current + spectate are public
   const spec = await fetch(`${base}/api/v1/spec`).then((r) => r.json());

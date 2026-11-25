@@ -124,6 +124,11 @@ export function createApp(o: AppOptions = {}): App {
       if (p === "/") return json(res, 200, { name: "WordTrap", api: "see /api/v1/spec", spec: "/api/v1/spec", health: "/healthz", watch: "/watch/{runId}" });
       if (p === "/healthz") return json(res, 200, { ok: true });
 
+      // ---- lobby ----
+      if (p === "/play" || p === "/play/") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        return res.end(await readFile(fileURLToPath(new URL("../../watch/play.html", import.meta.url))));
+      }
       // ---- spectator page (framed by app.bytearena.fun) ----
       if (p === "/" || p === "/watch" || /^\/watch\/[^/]+$/.test(p)) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": FRAME_CSP, "cache-control": "no-store" });

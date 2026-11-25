@@ -186,18 +186,18 @@ export function App({ mode }: { mode: Mode }) {
           <div className="label">You</div>
           {mode === "pollar" ? (
             signedIn ? <div className="row"><span className="ok">{id.user}</span><button className="ghost" onClick={id.signOut}>sign out</button></div>
-              : <div className="row"><button onClick={id.signInGoogle}>Sign in with Google (Pollar)</button><span className="dim">creates your Solana wallet</span></div>
+              : <div className="row"><button onClick={id.signInGoogle}>Sign in with Google</button><span className="dim">creates your Pollar wallet</span></div>
           ) : (
             <div className="row">
               <input value={id.user} placeholder="your name" onChange={(e) => id.setDemoUser(e.target.value.trim())} />
               <button className="ghost" onClick={() => id.connectWallet().then(() => say("wallet connected")).catch((e) => say(e.message))}>or connect a Solana wallet</button>
             </div>
           )}
-          <div className="label" style={{ marginTop: 14 }}>Balance</div>
+          <div className="label" style={{ marginTop: 14 }}>Pollar wallet balance</div>
           <div className="big">${balance ? (balance.balanceMicro / 1e6).toFixed(2) : "0.00"}</div>
           <div className="row">
             <input type="number" min={1} step={1} value={topUp} onChange={(e) => setTopUp(Number(e.target.value))} style={{ width: 90 }} />
-            <button className="safe" disabled={!signedIn} onClick={doTopUp}>{mode === "demo" ? "Add demo credits" : "Top up (Pollar)"}</button>
+            <button className="safe" disabled={!signedIn} onClick={doTopUp}>Add test funds</button>
           </div>
           {mode === "pollar" && <div className="row"><input value={paymentId} placeholder="payment / funding id" onChange={(e) => setPaymentId(e.target.value)} /><button className="ghost" disabled={!paymentId} onClick={confirmManual}>confirm</button></div>}
           <div className="dim" style={{ marginTop: 8, fontSize: 11 }}>Credits only land after the server verifies the payment with Pollar. Treasury: {treasury ? `${treasury.pubkeyHex.slice(0, 10)}… (${treasury.chain})` : "…"}</div>

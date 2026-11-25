@@ -160,7 +160,7 @@ sequenceDiagram
   participant S as Game server (fiat.ts)
   participant C as Chain (treasury signs)
   participant B as Byte (HTTP)
-  V->>P: Google sign-in · top-up (card / Pix / QR)
+  V->>P: Google sign-in creates a Pollar wallet · wallet top-up (local-currency rails are [ROADMAP])
   P-->>V: payment id (hint)
   V->>S: POST /api/v1/fiat/confirm {paymentId}
   S->>P: GET payment by id (secret key)
