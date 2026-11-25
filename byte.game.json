@@ -1,6 +1,6 @@
 {
   "api": {
-    "baseUrl": "https://wordtrap.onrender.com/",
+    "baseUrl": "https://wordtrap.onrender.com",
     "start": {
       "method": "POST",
       "path": "/api/v1/runs",
