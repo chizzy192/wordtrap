@@ -1,0 +1,13 @@
+{
+  "name": "wordtrap",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/server"],
+  "scripts": {
+    "test": "node --test \"packages/shared/test/*.test.ts\" \"apps/server/test/*.test.ts\"",
+    "dev": "node apps/server/src/main.ts",
+    "sim": "SIM=1 node apps/server/src/main.ts",
+    "program:test": "cargo test -p wordtrap"
+  },
+  "engines": { "node": ">=22.18" }
+}

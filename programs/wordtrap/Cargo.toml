@@ -1,0 +1,22 @@
+[package]
+name = "wordtrap"
+version = "0.1.0"
+edition = "2021"
+description = "WordTrap: commit-reveal word mines + backer pool"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "wordtrap"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = { version = "0.32.3", features = ["init-if-needed"] }
+anchor-spl = "0.32.3"
+solana-sha256-hasher = "2.3.0"

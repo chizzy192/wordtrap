@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "WordTrap TrapSetter",
+    "slug": "wordtrap-trapsetter",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": { "package": "xyz.wordtrap.trapsetter" },
+    "extra": {
+      "serverUrl": "https://YOUR-WORDTRAP-SERVER",
+      "rpcUrl": "https://api.devnet.solana.com",
+      "programId": "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS",
+      "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+    }
+  }
+}

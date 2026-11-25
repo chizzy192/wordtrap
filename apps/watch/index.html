@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WordTrap — Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0b0a10; --panel: #15131d; --line: #2a2636; --ink: #ece8f4; --dim: #8c86a0;
+    --fuse: #ffb020; --hot: #ff3b4e; --safe: #3ce0a0; --mine: #9b7bff;
+    --display: "Bungee", Impact, sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(1200px 600px at 20% -10%, #1d1530 0%, var(--bg) 60%); color: var(--ink); font: 14px/1.45 var(--mono); min-height: 100vh; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
+  .logo { font: 26px var(--display); letter-spacing: 1px; }
+  .logo b { color: var(--hot); }
+  .live { background: var(--hot); color: #fff; padding: 2px 8px; border-radius: 3px; font-weight: 600; font-size: 12px; animation: pulse 1.4s infinite; }
+  .meta { color: var(--dim); margin-left: auto; }
+  @keyframes pulse { 50% { opacity: .45; } }
+
+  main { display: grid; grid-template-columns: 1fr 340px; gap: 18px; padding: 18px 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; }
+
+  /* fuse */
+  .fuse { position: relative; height: 22px; background: #221d2e; border-radius: 11px; overflow: visible; }
+  .fuse .rope { position: absolute; inset: 0; width: 100%; border-radius: 11px; background: repeating-linear-gradient(-45deg, #c98a1a 0 8px, #a86f0f 8px 16px); transition: width .4s linear; }
+  .fuse .spark { position: absolute; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: radial-gradient(circle, #fff 0 20%, var(--fuse) 35%, transparent 70%); filter: blur(.5px); animation: spark .15s infinite alternate; transition: left .4s linear; }
+  @keyframes spark { to { transform: scale(1.35); } }
+  .fuse-row { display: flex; align-items: baseline; gap: 14px; margin-top: 8px; }
+  .fuse-sec { font: 44px var(--display); color: var(--fuse); }
+  .fuse-sec.low { color: var(--hot); animation: pulse .5s infinite; }
+
+  /* board */
+  .board { display: flex; gap: 8px; margin-top: 18px; align-items: stretch; }
+  .tile { flex: 1; min-height: 64px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 11px; color: var(--dim); position: relative; background: #120f19; }
+  .tile.cleared { border-color: #1f5b45; color: #4fa883; background: #0f1a16; }
+  .tile.here { border-color: var(--fuse); color: var(--ink); box-shadow: 0 0 0 2px #ffb02033, 0 0 24px #ffb02022; }
+  .tile.here::before { content: "BYTE"; position: absolute; top: -10px; left: 8px; background: var(--fuse); color: #000; font: 10px var(--display); padding: 1px 6px; border-radius: 3px; }
+  .tile.exit { flex: .6; display: grid; place-items: center; font: 14px var(--display); color: var(--safe); border-style: dashed; }
+
+  .prompt { font: 28px/1.15 var(--display); margin: 22px 0 6px; }
+  .bubble { margin-top: 14px; background: #1c1827; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; font-size: 18px; min-height: 64px; }
+  .bubble .w { display: inline-block; margin-right: .3em; }
+  .bubble .w.boom { color: #fff; background: var(--hot); border-radius: 4px; padding: 0 4px; }
+  .action { margin-top: 10px; color: var(--dim); }
+  .action b { color: var(--fuse); }
+
+  .words { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+  .chip.boom { border-color: var(--hot); color: var(--hot); }
+  .chip.ch { border-color: var(--mine); color: var(--mine); text-decoration: line-through; }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { background: #110f18; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .stat .v { font: 20px var(--display); }
+  .stat.b .v { color: var(--safe); } .stat.m .v { color: var(--mine); }
+
+  .window { text-align: center; font: 15px var(--display); color: var(--mine); padding: 10px; border: 1px dashed var(--mine); border-radius: 8px; margin-bottom: 12px; display: none; }
+  .mines { display: flex; flex-direction: column; gap: 6px; max-height: 290px; overflow: auto; }
+  .mine { display: flex; justify-content: space-between; padding: 6px 10px; background: #120f19; border-radius: 6px; border-left: 3px solid var(--mine); font-size: 12px; }
+  .mine.fired { border-left-color: var(--hot); background: #2a0f15; }
+  .mine .hash { color: var(--dim); letter-spacing: 2px; }
+  .mine.fired .hash { color: #fff; letter-spacing: 0; font-weight: 600; }
+
+  .ticker { grid-column: 1 / -1; font-size: 12px; color: var(--dim); display: flex; flex-direction: column-reverse; gap: 2px; max-height: 120px; overflow: hidden; }
+  .ticker .hint { color: #74c7ff; } .ticker .fire { color: var(--hot); }
+
+  .boom-overlay { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; background: radial-gradient(circle, #ff3b4e55, transparent 65%); }
+  .boom-overlay.on { animation: boom 1.8s ease-out; }
+  .boom-overlay div { text-align: center; font: 64px var(--display); color: #fff; text-shadow: 0 0 30px var(--hot); }
+  .boom-overlay small { display: block; font: 18px var(--mono); color: #ffd1d6; text-shadow: none; }
+  @keyframes boom { 0% { opacity: 0; transform: scale(.7); } 12% { opacity: 1; transform: scale(1.05); } 80% { opacity: 1; } 100% { opacity: 0; } }
+  body.shake { animation: shake .4s; }
+  @keyframes shake { 20%,60% { transform: translate(-8px, 3px); } 40%,80% { transform: translate(8px, -3px); } }
+
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--mine); }
+  .plant { display: grid; gap: 8px; margin-top: 10px; }
+  input, button { font: inherit; background: #0f0d15; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  button { background: var(--mine); color: #120c25; font-weight: 600; cursor: pointer; border: 0; }
+  .end { grid-column: 1/-1; text-align: center; font: 34px var(--display); padding: 18px; display: none; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } .board { flex-wrap: wrap; } .tile { min-width: 30%; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">WORD<b>TRAP</b></div><span class="live">LIVE</span>
+  <span class="meta" id="meta">connecting…</span>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="label">Fuse</div>
+    <div class="fuse"><div class="rope" id="rope"></div><div class="spark" id="spark"></div></div>
+    <div class="fuse-row"><span class="fuse-sec" id="fuseSec">--</span><span class="label" style="margin:0">seconds until Byte goes boom</span></div>
+
+    <div class="board" id="board"></div>
+    <div class="prompt" id="prompt">Waiting for match…</div>
+    <div class="bubble" id="bubble"></div>
+    <div class="action" id="action"></div>
+
+    <div class="label" style="margin-top:18px">Words Byte has said (on-chain)</div>
+    <div class="words" id="words"></div>
+  </section>
+
+  <aside>
+    <div class="panel">
+      <div class="window" id="window">MINES ARMING · <span id="windowSec"></span>s</div>
+      <div class="stats">
+        <div class="stat b"><div class="label">Backer pool</div><div class="v" id="pool">$0</div></div>
+        <div class="stat m"><div class="label">Mines staked</div><div class="v" id="staked">$0</div></div>
+        <div class="stat"><div class="label">Mines fired</div><div class="v" id="firedN">0</div></div>
+        <div class="stat"><div class="label">x402 hints</div><div class="v" id="hints">0</div></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <div class="label">Hidden mines (sha256 commitments)</div>
+      <div class="mines" id="mines"></div>
+      <details>
+        <summary>Plant a mine (demo — mobile app does this with MWA)</summary>
+        <div class="plant">
+          <input id="pName" placeholder="your handle" value="you" />
+          <input id="pWord" placeholder="word Byte will say…" />
+          <input id="pStake" type="number" step="0.05" min="0.05" value="0.25" />
+          <button id="pBtn">Arm mine</button>
+          <div id="pMsg" class="label" style="text-transform:none"></div>
+        </div>
+      </details>
+    </div>
+  </aside>
+
+  <div class="end panel" id="end"></div>
+  <div class="ticker" id="ticker"></div>
+</main>
+
+<div class="boom-overlay" id="boom"><div id="boomText"></div></div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => "$" + Number(n || 0).toFixed(2);
+const enc = new TextEncoder();
+let state = null, windowTimer = null, fired = new Set();
+const mySecrets = new Map(); // trapId -> {word, salt, setter}
+
+// ---- crypto: identical to packages/shared + the Rust program ----
+const sha = async (...parts) => {
+  const len = parts.reduce((n, p) => n + p.length, 0), buf = new Uint8Array(len); let o = 0;
+  for (const p of parts) { buf.set(p, o); o += p.length; }
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+};
+const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+const mockKey = (name) => sha(enc.encode("mockkey:" + name));
+
+function render() {
+  if (!state) return;
+  const s = state;
+  $("meta").textContent = `match ${s.matchId} · turn ${s.turn} · ${s.status}`;
+  const pct = Math.max(0, s.fuseMs / s.fuseTotalMs) * 100;
+  $("rope").style.width = pct + "%";
+  $("spark").style.left = pct + "%";
+  const sec = Math.ceil(s.fuseMs / 1000);
+  $("fuseSec").textContent = sec;
+  $("fuseSec").className = "fuse-sec" + (sec <= 30 ? " low" : "");
+
+  $("board").innerHTML = s.tiles.map((t, i) =>
+    `<div class="tile ${t.cleared ? "cleared" : ""} ${i === s.position ? "here" : ""}">${i + 1}. ${t.prompt}</div>`).join("") +
+    `<div class="tile exit ${s.position >= s.tiles.length ? "here" : ""}">EXIT</div>`;
+  $("prompt").textContent = s.tiles[s.position]?.prompt ?? "EXIT REACHED";
+
+  const boomWords = new Set(s.traps.filter((t) => t.word).map((t) => t.word));
+  const ch = new Set(s.challenged.map((c) => c.word));
+  const uniq = [...new Map(s.spoken.map((w) => [w.word, w])).keys()];
+  $("words").innerHTML = uniq.slice(-80).map((w) => `<span class="chip ${boomWords.has(w) ? "boom" : ""}">${w}</span>`).join("") +
+    [...ch].map((w) => `<span class="chip ch" title="challenged">${w}</span>`).join("");
+
+  $("pool").textContent = fmt(s.backerTotal);
+  $("staked").textContent = fmt(s.trapTotal);
+  $("firedN").textContent = s.traps.filter((t) => t.status === "fired").length;
+  $("hints").textContent = `${s.hintsBought}`;
+  $("mines").innerHTML = [...s.traps].reverse().map((t) =>
+    `<div class="mine ${t.status}"><span class="hash">${t.word ? "💥 " + t.word.toUpperCase() : "▒▒▒▒▒▒ " + t.id.slice(0, 6)}</span><span>${fmt(t.stake)} · T${t.armedTurn}${mySecrets.has(t.id) ? " · yours" : ""}</span></div>`).join("");
+
+  if (s.status === "ended") {
+    $("end").style.display = "block";
+    $("end").innerHTML = s.byteSurvived ? `<span style="color:var(--safe)">BYTE ESCAPED</span> — backers sweep the unfired mines` : `<span style="color:var(--hot)">BYTE DETONATED</span> — mine setters cash out`;
+  } else $("end").style.display = "none";
+  autoReveal();
+}
+
+function tick(text, cls = "") {
+  const d = document.createElement("div");
+  d.className = cls; d.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  $("ticker").prepend(d);
+  while ($("ticker").children.length > 8) $("ticker").lastChild.remove();
+}
+
+let speechId = 0;
+function speak(text) {
+  const b = $("bubble"); b.innerHTML = ""; const id = ++speechId;
+  text.split(/\s+/).forEach((raw, i) => setTimeout(() => {
+    if (id !== speechId) return; // a newer line started — drop stale words
+    const span = document.createElement("span");
+    span.className = "w" + (fired.has(raw.toLowerCase().replace(/[^a-z]/g, "")) ? " boom" : "");
+    span.textContent = raw; b.appendChild(span);
+  }, i * 70));
+}
+
+function boom(word, who, payout) {
+  $("boomText").innerHTML = `BOOM<small>“${word.toUpperCase()}” · ${who} +${fmt(payout)}</small>`;
+  const o = $("boom"); o.classList.remove("on"); void o.offsetWidth; o.classList.add("on");
+  document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake");
+}
+
+function onEvent(e) {
+  switch (e.type) {
+    case "state": state = e.state; render(); break;
+    case "narration": speak(e.text); break;
+    case "action": $("action").innerHTML = `<b>${e.action}</b> · ${e.detail}`; tick(`T${e.turn} ${e.action} — ${e.detail}`); break;
+    case "hint": tick(`Byte paid $${e.costUsd} via x402 for risk scores: ${Object.entries(e.scores).map(([w, s]) => `${w} ${Math.round(s * 100)}%`).join(", ")}`, "hint"); break;
+    case "trap_planted": tick(`mine armed · ${fmt(e.trap.stake)} · live from turn ${e.trap.armedTurn}`); break;
+    case "trap_fired": fired.add(e.trap.word); boom(e.trap.word, e.trap.setter || "anon", e.payout); tick(`💥 ${e.trap.word.toUpperCase()} detonated · −${e.fuseBurnMs / 1000}s fuse · paid ${fmt(e.payout)}`, "fire"); break;
+    case "turn_window": {
+      clearInterval(windowTimer);
+      let left = Math.ceil(e.closesInMs / 1000);
+      $("window").style.display = "block"; $("windowSec").textContent = left;
+      windowTimer = setInterval(() => { left--; $("windowSec").textContent = left; if (left <= 0) { clearInterval(windowTimer); $("window").style.display = "none"; } }, 1000);
+      break;
+    }
+    case "match_end": tick(`MATCH OVER — ${e.reason}`); fired = new Set(); break;
+  }
+}
+
+// ---- demo planter: commit in-browser, keep salt locally, auto-reveal when Byte says it ----
+$("pBtn").onclick = async () => {
+  const setter = $("pName").value.trim() || "you";
+  const word = $("pWord").value.toLowerCase().replace(/[^a-z]/g, "");
+  if (word.length < 3) return ($("pMsg").textContent = "word must be 3+ letters a–z");
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const c = hex(await sha(enc.encode("wordtrap:v1"), enc.encode(word), salt, await mockKey(setter)));
+  const r = await fetch("/api/plant", { method: "POST", body: JSON.stringify({ commitmentHex: c, stake: Number($("pStake").value), setter }) }).then((r) => r.json());
+  if (r.error) return ($("pMsg").textContent = r.error);
+  mySecrets.set(r.id, { word, salt: hex(salt), setter, armedTurn: r.armedTurn });
+  $("pMsg").textContent = `armed: only your browser knows it's “${word}”. Live from turn ${r.armedTurn}.`;
+  $("pWord").value = "";
+};
+async function autoReveal() {
+  for (const [id, s] of mySecrets) {
+    if (!state.spoken.some((w) => w.word === s.word && w.turn >= s.armedTurn)) continue;
+    const r = await fetch("/api/reveal", { method: "POST", body: JSON.stringify({ trapId: id, word: s.word, saltHex: s.salt, setter: s.setter }) }).then((r) => r.json());
+    if (!r.error) { mySecrets.delete(id); $("pMsg").textContent = `YOUR MINE FIRED: +${fmt(r.payout)}`; }
+  }
+}
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onmessage = (m) => onEvent(JSON.parse(m.data));
+  ws.onclose = () => { $("meta").textContent = "reconnecting…"; setTimeout(connect, 1500); };
+}
+connect();
+</script>
+</body>
+</html>

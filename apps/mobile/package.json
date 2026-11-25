@@ -1,0 +1,28 @@
+{
+  "name": "@wordtrap/mobile",
+  "version": "0.1.0",
+  "main": "index.ts",
+  "private": true,
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "apk": "eas build -p android --profile preview"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@noble/hashes": "^2.0.0",
+    "@solana-mobile/mobile-wallet-adapter-protocol": "^2.2.0",
+    "@solana-mobile/mobile-wallet-adapter-protocol-web3js": "^2.2.0",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0",
+    "buffer": "^6.0.3",
+    "expo": "~54.0.0",
+    "expo-constants": "~18.0.0",
+    "expo-dev-client": "~6.0.0",
+    "expo-secure-store": "~15.0.0",
+    "react": "19.1.0",
+    "react-native": "0.81.4",
+    "react-native-get-random-values": "^1.11.0"
+  },
+  "devDependencies": { "typescript": "~5.9.0", "@types/react": "~19.1.0" }
+}
