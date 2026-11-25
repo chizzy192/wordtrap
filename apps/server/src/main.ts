@@ -73,6 +73,7 @@ export function createApp(o: AppOptions = {}): App {
     const p = url.pathname;
     try {
       if (req.method === "OPTIONS") { res.writeHead(204, CORS); return res.end(); }
+      if (p === "/") return json(res, 200, { name: "WordTrap", api: "see /api/v1/spec", spec: "/api/v1/spec", health: "/healthz", watch: "/watch/{runId}" });
       if (p === "/healthz") return json(res, 200, { ok: true });
 
       // ---- spectator page (framed by app.bytearena.fun) ----
