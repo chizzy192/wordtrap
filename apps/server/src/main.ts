@@ -1,8 +1,12 @@
 // WordTrap server: the game API Byte Arena's agent plays over HTTPS + spectator feed + x402 oracle.
-//   SIM=1          in-memory chain + simulated crowd; a local driver plays runs THROUGH this API
+//   CROWD=1        attach simulated viewers (mines + backers) to EVERY run, including real Byte Arena
+//                  runs, without any self-play. Mock chain only. CROWD_SETTERS / CROWD_AGGRESSION /
+//                  CROWD_BACKER_USD tune it (defaults in crowd.ts).
+//   SIM=1          CROWD=1 plus a local driver that plays runs THROUGH this API (rehearsal only —
+//                  never run SIM against real Byte runs)
 //   FAST=1         sim driver acts every 600 ms instead of 2.5 s
 //   ONE_MATCH=1    sim exits after one run (0 = escaped, 3 = dead)
-//   CHAIN=solana   real devnet program (see chain/solana.ts)
+//   CHAIN=solana   real devnet program (see chain/solana.ts); CROWD is a no-op there
 // The spec Byte Arena reads is byte.game.json at the repo root (served at /api/v1/spec).
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -13,7 +17,7 @@ import type { Chain } from "./chain/types.ts";
 import { InvalidActionError, StaleTurnError, type MatchConfig } from "./match.ts";
 import { RunManager, type Run } from "./runs.ts";
 import { handleRisk, requirement, simVerifier, facilitatorVerifier } from "./oracle.ts";
-import { startCrowd } from "./crowd.ts";
+import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
 
 const WATCH_HTML = fileURLToPath(new URL("../../watch/index.html", import.meta.url));
@@ -25,6 +29,9 @@ const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers
 const ACTION_ROUTES: Record<string, string> = { play: "play_word", hint: "buy_hint", defuse: "defuse_tile", challenge: "challenge_word", pass: "pass_turn" };
 
 export interface AppOptions {
+  /** Attach simulated viewers to every run (mock chain only). `sim` implies it. */
+  crowd?: boolean | Partial<CrowdOptions>;
+  /** Self-play driver loop over the public API (rehearsal only). Implies `crowd`. */
   sim?: boolean;
   cfg?: Partial<MatchConfig>;
   makeChain?: () => Promise<Chain>;
@@ -65,7 +72,12 @@ export function createApp(o: AppOptions = {}): App {
     makeChain,
     cfg: o.cfg,
     oracleUrl: (id) => `http://127.0.0.1:${port}/oracle/risk?run=${id}`,
-    onRun: (run: Run) => { if (o.sim && run.chain instanceof MockChain) startCrowd(run.match, run.chain); },
+    onRun: (run: Run) => {
+      const crowd = o.sim ? (o.crowd === false || o.crowd === undefined ? true : o.crowd) : o.crowd;
+      if (!crowd) return;
+      if (!(run.chain instanceof MockChain)) return;          // CROWD is a no-op on a real chain
+      startCrowd(run.match, run.chain, crowd === true ? {} : crowd);
+    },
   });
 
   const server = createServer(async (req, res) => {
@@ -185,10 +197,15 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const PORT = Number(process.env.PORT ?? 8787);
   const SIM = process.env.SIM === "1";
+  const CROWD = SIM || process.env.CROWD === "1";
   const FAST = process.env.FAST === "1";
-  const app = createApp({ sim: SIM, oraclePayTo: process.env.ORACLE_PAYTO, network: process.env.X402_NETWORK, facilitator: process.env.X402_FACILITATOR });
+  const crowd = crowdFromEnv();
+  if (CROWD && process.env.CHAIN === "solana") console.warn("CROWD/SIM: simulated viewers only work on the mock chain; CHAIN=solana → crowd disabled");
+  const app = createApp({ sim: SIM, crowd: CROWD ? crowd : false, oraclePayTo: process.env.ORACLE_PAYTO, network: process.env.X402_NETWORK, facilitator: process.env.X402_FACILITATOR });
   const port = await app.listen(PORT);
-  console.log(`WordTrap ${SIM ? "SIM" : process.env.CHAIN ?? "mock"} · api http://localhost:${port}/api/v1 · spec /api/v1/spec · watch /watch/<runId>`);
+  const mode = SIM ? "SIM (crowd + self-play driver)" : CROWD ? "CROWD (simulated viewers on every run)" : process.env.CHAIN ?? "mock";
+  console.log(`WordTrap ${mode} · api http://localhost:${port}/api/v1 · spec /api/v1/spec · watch /watch/<runId>`);
+  if (CROWD && process.env.CHAIN !== "solana") console.log(`crowd: ${crowd.setters} setters · aggression ${crowd.aggression} · backers $${crowd.backerUsd}`);
   if (SIM) {
     const base = `http://127.0.0.1:${port}`;
     for (;;) {

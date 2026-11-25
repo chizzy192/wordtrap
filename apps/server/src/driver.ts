@@ -5,10 +5,13 @@ import type { ActionType, BoardState } from "@wordtrap/shared";
 import { TILE_DECK } from "./content.ts";
 
 export interface Move { action: ActionType; word?: string }
+/** `blurt: false` removes the deliberate "play the obvious card" mistake — approximates a smart Byte. */
+export interface DriverOptions { blurt?: boolean }
 
 const UNKNOWN_RISK = 0.3;
 
-export function decide(state: BoardState): Move {
+export function decide(state: BoardState, opts: DriverOptions = {}): Move {
+  const blurt = opts.blurt ?? true;
   const hand = state.hand;
   const armed = state.traps.filter((t) => t.status === "armed").length;
   const tilesLeft = state.tiles.length - state.position;
@@ -27,7 +30,7 @@ export function decide(state: BoardState): Move {
   if (state.fuse < 35 && state.defusesLeft > 0 && tilesLeft > 1) return { action: "defuse_tile" };
 
   // Byte must be fallible or the stream is boring: every 4th turn it blurts the most obvious card.
-  if (state.turn % 4 === 0) {
+  if (blurt && state.turn % 4 === 0) {
     const tile = TILE_DECK.find((t) => t.prompt === state.tiles[state.position]?.prompt);
     const obvious = tile?.obvious.find((w) => hand.includes(w));
     if (obvious) return { action: "play_word", word: obvious };

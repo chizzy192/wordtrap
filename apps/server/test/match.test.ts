@@ -136,6 +136,36 @@ test("(e) reading state has zero side effects", async () => {
   assert.equal(chain.turn, 1);
 });
 
+test("stacked mines on one word fire in one wave and emit multi_boom", async () => {
+  const chain = new MockChain();
+  await chain.backByte("alice", 10);
+  const m = seededMatch(chain);
+  const feed: FeedEvent[] = [];
+  m.on("feed", (e: FeedEvent) => feed.push(e));
+  let s = await m.start();
+  const word = s.hand[0];
+  const t1 = await plant(chain, word, "bob", 1);
+  const t2 = await plant(chain, word, "carol", 0.5);
+  m.afterWords.push(async (words) => {
+    if (!words.includes(word) || chain.turn < t1.armedTurn) return;
+    await reveal(chain, t1.id, word, "bob");
+    await reveal(chain, t2.id, word, "carol");
+  });
+  s = await m.act("pass_turn");
+  const before = s.fuse;
+  s = await m.act("play_word", { word });
+  assert.equal(s.fuse, before - 5 - 22 - 22);
+  const multi = feed.find((e) => e.type === "multi_boom") as Extract<FeedEvent, { type: "multi_boom" }>;
+  assert.ok(multi, "multi_boom emitted");
+  assert.equal(multi.count, 2);
+  assert.equal(multi.fuseBurn, 44);
+  assert.equal(multi.payout, 3 + 1.5);
+  assert.deepEqual(multi.setters.sort(), ["bob", "carol"]);
+  assert.equal(feed.filter((e) => e.type === "trap_fired").length, 2);
+  const detail = (feed.filter((e) => e.type === "action").at(-1) as any).detail;
+  assert.match(detail, /MULTI-BOOM, 2 mines/);
+});
+
 test("buy_hint stores oracle scores into state.hint and survives an oracle outage", async () => {
   let current!: Match;
   const { url, srv } = await oracle(() => current);

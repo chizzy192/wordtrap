@@ -53,6 +53,7 @@ export class Match extends EventEmitter {
   private readonly oracleUrl: string;
   private readonly seed: number;
   private fired = new Set<string>();
+  private wave: TrapFiredEvent[] = [];          // detonations during the current reveal wave
   private windowArmed = { count: 0, stake: 0 };
   private busy = false;
 
@@ -143,8 +144,13 @@ export class Match extends EventEmitter {
         t.played.push(w);
         this.state.hand = this.state.hand.filter((x) => x !== w);
         // Let synchronous revealers (sim crowd, relayers) detonate before we answer.
+        this.wave = [];
         for (const h of this.afterWords) await h([w]);
-        const boom = this.fired.has(w) ? " — BOOM, it was mined" : "";
+        const wave = this.wave.filter((e) => e.word === w);
+        if (wave.length >= 2) {
+          this.push({ type: "multi_boom", word: w, count: wave.length, payout: wave.reduce((n, e) => n + e.payout, 0), fuseBurn: wave.length * this.cfg.fireBurn, setters: wave.map((e) => e.trap.setter), turn });
+        }
+        const boom = wave.length >= 2 ? ` — MULTI-BOOM, ${wave.length} mines on it` : this.fired.has(w) ? " — BOOM, it was mined" : "";
         if (t.played.length >= t.needed) { this.clearTile(); return `played "${w}"${boom} · tile cleared`; }
         return `played "${w}"${boom} · ${t.played.length}/${t.needed} on "${tile.prompt}"`;
       }
@@ -227,6 +233,7 @@ export class Match extends EventEmitter {
 
   private onFired(e: TrapFiredEvent) {
     this.fired.add(e.word);
+    this.wave.push(e);
     this.burn(this.cfg.fireBurn);
     this.sync();
     this.push({ type: "trap_fired", trap: e.trap, payout: e.payout, fuseBurn: this.cfg.fireBurn });

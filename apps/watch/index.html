@@ -84,6 +84,12 @@
   .boom-overlay.on { animation: boom 1.8s ease-out; }
   .boom-overlay div { text-align: center; font: 64px var(--display); color: #fff; text-shadow: 0 0 30px var(--hot); }
   .boom-overlay small { display: block; font: 18px var(--mono); color: #ffd1d6; text-shadow: none; }
+  /* several mines on one word: bigger, longer, brighter */
+  .boom-overlay.multi { background: radial-gradient(circle, #ff3b4ecc, #ffb02055 40%, transparent 70%); }
+  .boom-overlay.multi.on { animation: boom 2.8s ease-out; }
+  .boom-overlay.multi div { font-size: 96px; color: var(--fuse); text-shadow: 0 0 40px var(--hot), 0 0 80px var(--fuse); }
+  .boom-overlay.multi small { font-size: 24px; color: #fff; }
+  .boom-overlay.multi .stack { font: 32px var(--display); color: #fff; }
   @keyframes boom { 0% { opacity: 0; transform: scale(.7); } 12% { opacity: 1; transform: scale(1.05); } 80% { opacity: 1; } 100% { opacity: 0; } }
   body.shake { animation: shake .4s; }
   @keyframes shake { 20%,60% { transform: translate(-8px, 3px); } 40%,80% { transform: translate(8px, -3px); } }
@@ -134,7 +140,8 @@
       <div class="stat"><div class="v" id="score">0</div></div>
     </div>
     <div class="panel" style="margin-top:14px">
-      <div class="label">Hidden mines (sha256 commitments) · arm on Byte's next turn</div>
+      <div class="label">Hidden mines (sha256 commitments)</div>
+      <div class="label" style="text-transform:none;letter-spacing:0;color:var(--mine)">mines arm next turn · a challenge only disarms what's already live</div>
       <div class="mines" id="mines"></div>
       <details>
         <summary>Plant a mine (demo — mobile app does this with MWA)</summary>
@@ -164,7 +171,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const enc = new TextEncoder();
 const POLL_MS = 1200;
 let runId = (location.pathname.match(/^\/watch\/([^/]+)/) || [])[1] || null;
-let state = null, lastSeq = 0, fired = new Set();
+let state = null, lastSeq = 0, fired = new Set(), pendingMulti = false;
 const mySecrets = new Map(); // trapId -> {word, salt, setter, armedTurn}
 
 // ---- crypto: identical to packages/shared + the Rust program ----
@@ -240,7 +247,13 @@ function tick(text, cls = "") {
 
 function boom(word, who, payout) {
   $("boomText").innerHTML = `BOOM<small>“${esc(word.toUpperCase())}” · ${esc(who)} +${fmt(payout)}</small>`;
-  const o = $("boom"); o.classList.remove("on"); void o.offsetWidth; o.classList.add("on");
+  const o = $("boom"); o.classList.remove("on", "multi"); void o.offsetWidth; o.classList.add("on");
+  document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake");
+}
+// 2+ mines on the same word fired in one wave: one stacked flash with the total payout
+function multiBoom(e) {
+  $("boomText").innerHTML = `MULTI-BOOM<span class="stack">${e.count}× “${esc(e.word.toUpperCase())}”</span><small>${e.setters.map(esc).join(" + ")} split +${fmt(e.payout)} · −${e.fuseBurn} fuse</small>`;
+  const o = $("boom"); o.classList.remove("on"); void o.offsetWidth; o.classList.add("multi", "on");
   document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake");
 }
 
@@ -249,7 +262,8 @@ function onEvent(e) {
     case "action": $("action").innerHTML = `<b>${esc(e.action)}</b> · ${esc(e.detail)}`; tick(`T${e.turn} ${e.action} — ${e.detail}`); break;
     case "hint": tick(`Byte paid $${e.costUsd} via x402 for risk scores: ${Object.entries(e.scores).map(([w, s]) => `${w} ${Math.round(s * 100)}%`).join(", ")}`, "hint"); break;
     case "trap_planted": tick(`mine armed · ${fmt(e.trap.stake)} · live from turn ${e.trap.armedTurn}`); break;
-    case "trap_fired": fired.add(e.trap.word); boom(e.trap.word, e.trap.setter || "anon", e.payout); tick(`💥 ${e.trap.word.toUpperCase()} detonated · −${e.fuseBurn} fuse · paid ${fmt(e.payout)}`, "fire"); break;
+    case "trap_fired": fired.add(e.trap.word); if (!pendingMulti) boom(e.trap.word, e.trap.setter || "anon", e.payout); tick(`💥 ${e.trap.word.toUpperCase()} detonated · −${e.fuseBurn} fuse · paid ${fmt(e.payout)}`, "fire"); break;
+    case "multi_boom": multiBoom(e); tick(`💥💥 MULTI-BOOM · ${e.count} mines on ${e.word.toUpperCase()} · −${e.fuseBurn} fuse · paid ${fmt(e.payout)}`, "fire"); break;
     case "match_end": tick(`RUN OVER — ${e.reason}`); break;
   }
 }
@@ -287,7 +301,9 @@ async function poll() {
     const r = await fetch(`/runs/${runId}/spectate?after=${lastSeq}`);
     if (!r.ok) { $("meta").textContent = `run ${runId}: ${r.status}`; return; }
     const { seq, events, state: s } = await r.json();
+    pendingMulti = events.some((e) => e.type === "multi_boom");   // one stacked flash instead of N small ones
     for (const e of events) onEvent(e);
+    pendingMulti = false;
     lastSeq = seq; state = s;
     render();
   } catch (e) { $("meta").textContent = "reconnecting…"; }

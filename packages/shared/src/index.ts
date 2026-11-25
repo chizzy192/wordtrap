@@ -126,4 +126,6 @@ export type FeedEvent =
   | { type: "hint"; scores: Record<string, number>; costUsd: number; txSig: string }
   | { type: "trap_planted"; trap: TrapView }
   | { type: "trap_fired"; trap: TrapView; payout: number; fuseBurn: number }
+  /** Two or more mines fired on the same word in one reveal wave (stacked mines = one big boom). */
+  | { type: "multi_boom"; word: string; count: number; payout: number; fuseBurn: number; setters: string[]; turn: number }
   | { type: "match_end"; status: MatchStatus; reason: string };

@@ -64,7 +64,7 @@ All twelve steps are in the tree. `engine.ts` and `agent.ts` are gone and `ws` i
 1. ✅ `packages/shared/src/index.ts`: new `BoardState` / `FeedEvent`, lowercase action names. Hash helpers untouched; hash vectors green.
 2. ✅ `apps/server/src/content.ts`: `sideways` and `needed` per tile, `handFor()`.
 3. ✅ `apps/server/src/match.ts`: turn-based `Match`, `act()`, `StaleTurnError` (409), `InvalidActionError` (400), `afterWords` reveal hooks, `turnHooks` plant hooks.
-4. ✅ `apps/server/src/crowd.ts`: hand-aware setters, synchronous reveal hook. Defaults: 5 setters, aggression 0.13.
+4. ✅ `apps/server/src/crowd.ts`: hand-aware setters, synchronous reveal hook. Nov 25 rework: setters stack on the 1–2 most obvious cards (`multi_boom` event when 2+ fire together), 25% scatter onto sideways cards / habits / just-challenged words. Defaults: 5 setters, aggression 0.11, $20 backers. **Deploy with `CROWD=1`** (not `SIM=1`) so real Byte runs get mines without self-play.
 5. ✅ `apps/server/src/driver.ts`: pure `decide(state)`.
 6. ✅ `apps/server/src/runs.ts` + `main.ts`: routes, Bearer auth, CSP header, SIM loop over the public API, `ONE_MATCH` exit codes.
 7. ✅ `byte.game.json` at repo root (host placeholders still to fill).

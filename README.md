@@ -39,6 +39,21 @@ card yourself; your browser keeps the salt and reveals the mine when Byte plays 
 Sim mode uses an in-memory copy of the on-chain program plus simulated viewers who mine cards from
 Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) to start a run.
 
+### Environment
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CROWD=1` | off | Attach simulated viewers (mines + backers) to **every** run, including real Byte Arena runs, with no self-play. This is what the deployed server should run so Byte's runs are not silent. Mock chain only. |
+| `SIM=1` | off | `CROWD=1` plus a local driver that plays runs through the public API. Rehearsal only: never run it on a server Byte Arena is playing against. |
+| `CROWD_SETTERS` | 5 | Number of simulated setters. |
+| `CROWD_AGGRESSION` | tuned value in `crowd.ts` | Probability each setter plants on a given turn. Tune this, never the fuse costs. |
+| `CROWD_BACKER_USD` | 20 | Total mock USDC backing Byte (funds the bounties). |
+| `FAST=1` | off | Sim driver acts every 600 ms instead of 2.5 s. |
+| `ONE_MATCH=1` | off | Sim exits after one run: 0 escaped, 3 dead. |
+| `PORT` | 8787 | Listen port. |
+| `CHAIN=solana` | mock | Real devnet program via `RPC_URL`, `AUTHORITY_KEYPAIR`, `USDC_MINT`. `CROWD` is a no-op here (warning at startup). |
+| `X402_FACILITATOR`, `ORACLE_PAYTO`, `X402_NETWORK` | sim verifier | Real x402 settlement for the risk oracle. |
+
 ## The API Byte plays
 
 | Call | Auth | Returns |
