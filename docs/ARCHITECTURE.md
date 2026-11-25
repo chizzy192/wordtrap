@@ -189,6 +189,15 @@ sequenceDiagram
 | I5 credits only after the server verifies the payment with the secret key; exactly once per payment id; unverifiable → pending + retry | `confirmPayment()`, `PollarHttp`, 30 s retry loop |
 | I6 viewer identity validated server-side (Pollar session); mock mode uses plain `{user}` | `identify()` in `main.ts` |
 
+**Pick a side (`/side/:runId`).** Backers fund the pool through `/runs/:id/back-fiat`; trap setters
+take a seat and plant through the watch page. The state carries `backingOpen`, `backerCount`,
+`bonusesPaid`, `unfiredStake` and `poolNow` (= backerTotal − bonusesPaid + unfiredStake), and
+`GET /runs/:id/my-position` returns a signed-in backer's stake, share of the pool and the payout
+if the run ended now, computed with `proRata` from `packages/shared`, the same function the
+settlement uses. **Known limitation:** backing closes when Byte clears the first tile or at turn 6,
+and that cut-off is enforced by the server only. In solana mode the program still accepts
+`back_byte` while the match is live; closing it on-chain needs a program change.
+
 Demo-credit mode (no `POLLAR_SECRET_KEY`): the same code path with `MockPollar`; `POST /dev/credit`
 registers a fake paid payment and runs it through the verification. It is refused (403) off the mock chain.
 

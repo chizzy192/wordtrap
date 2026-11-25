@@ -28,7 +28,7 @@ function loadSecrets(): Record<string, Secret> { try { return JSON.parse(localSt
 function saveSecrets(s: Record<string, Secret>) { try { localStorage.setItem(SECRETS_KEY, JSON.stringify(s)); } catch { /* private mode */ } }
 
 // ---- identity (I6): Pollar session in pollar mode, plain user / wallet address in demo mode ----
-function useIdentity(mode: Mode) {
+export function useIdentity(mode: Mode) {
   const [user, setUser] = useState<string>(() => { try { return localStorage.getItem(USER_KEY) ?? ""; } catch { return ""; } });
   const [token, setToken] = useState<string | null>(null);
   const [pollarErr, setPollarErr] = useState<string | null>(null);
@@ -114,7 +114,7 @@ export function App({ mode }: { mode: Mode }) {
       try {
         let rid = runId;
         if (!rid) { const c = await fetch(SERVER + "/api/v1/current").then((r) => r.json()); if (!c.runId) return; rid = c.runId; setRunId(rid); }
-        const r = await fetch(`${SERVER}/runs/${rid}/spectate`);
+        const r = await fetch(`${SERVER}/runs/${rid}/spectate?delay=0`);   // planters act on the real, undelayed game
         if (!r.ok) { if (r.status === 404) setRunId(null); return; }
         const { state: s } = await r.json();
         if (!alive) return;

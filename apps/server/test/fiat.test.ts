@@ -146,6 +146,84 @@ test("restart: the ledger is rebuilt from data/fiat-ledger.json with balances an
   await second.app.close();
 });
 
+test("pick a side: backing works before the cut-off and is refused once Byte clears the first tile", async () => {
+  const { app, base } = await boot({ cfg: { tiles: 2 } });
+  const { runId, auth, state } = await startRun(base);
+  assert.equal(state.backingOpen, true);
+  await post(base, "/dev/credit", { user: "alice", amount: 10 });
+  const ok = await post(base, `/runs/${runId}/back-fiat`, { user: "alice", amount: 3 });
+  assert.equal(ok.status, 200);
+  // clear the first tile
+  const done = await fetch(`${base}/api/v1/runs/${runId}/defuse`, { method: "POST", headers: auth, body: "{}" }).then((r) => r.json());
+  assert.equal(done.position, 1);
+  assert.equal(done.backingOpen, false);
+  const late = await post(base, `/runs/${runId}/back-fiat`, { user: "alice", amount: 1 });
+  assert.equal(late.status, 400);
+  assert.equal((await late.json()).error, "Backing closed when Byte cleared the first tile.");
+  const bal = await fetch(`${base}/api/v1/fiat/balance?user=alice`).then((r) => r.json());
+  assert.equal(bal.balanceMicro, 7 * MICRO, "the refused call did not debit");
+  await app.close();
+});
+
+test("pick a side: backing also closes at turn 6 when the first tile is still open", async () => {
+  const { app, base } = await boot({ cfg: { tiles: 2 } });
+  const { runId, auth } = await startRun(base);
+  for (let i = 0; i < 5; i++) await fetch(`${base}/api/v1/runs/${runId}/pass`, { method: "POST", headers: auth, body: "{}" });
+  const s = await fetch(`${base}/api/v1/runs/${runId}/state`, { headers: auth }).then((r) => r.json());
+  assert.equal(s.turn, 6); assert.equal(s.position, 0); assert.equal(s.backingOpen, false);
+  await post(base, "/dev/credit", { user: "bob", amount: 2 });
+  const late = await post(base, `/runs/${runId}/back-fiat`, { user: "bob", amount: 1 });
+  assert.equal(late.status, 400);
+  assert.equal((await late.json()).error, "Backing closed at turn 6.");
+  await app.close();
+});
+
+test("pick a side: my-position matches proRata for two backers after one mine fired, and settlement pays what the page showed", async () => {
+  const { app, base } = await boot({ cfg: { tiles: 1 } });
+  const { runId, auth, state } = await startRun(base);
+  await post(base, "/dev/credit", { user: "alice", amount: 6 });
+  await post(base, "/dev/credit", { user: "bob", amount: 2 });
+  await post(base, "/dev/credit", { user: "carol", amount: 5 });
+  await post(base, `/runs/${runId}/back-fiat`, { user: "alice", amount: 6 });
+  await post(base, `/runs/${runId}/back-fiat`, { user: "bob", amount: 2 });
+  // carol mines a hand word for $1 and Byte plays it: she gets stake + 2x bonus = $3, the pool paid $2
+  const word = state.hand[0];
+  const planted = await post(base, `/runs/${runId}/plant-fiat`, { user: "carol", commitmentHex: await treasuryCommitment(base, word), stake: 1 }).then((r) => r.json());
+  await fetch(`${base}/api/v1/runs/${runId}/pass`, { method: "POST", headers: auth, body: "{}" });
+  await fetch(`${base}/api/v1/runs/${runId}/play`, { method: "POST", headers: auth, body: JSON.stringify({ word }) });
+  const revealed = await post(base, `/runs/${runId}/reveal-fiat`, { user: "carol", trapId: planted.trap.id, word, saltHex: toHex(salt) }).then((r) => r.json());
+  assert.equal(revealed.payoutMicro, 3 * MICRO);
+  const live = await fetch(`${base}/api/v1/runs/${runId}/state`, { headers: auth }).then((r) => r.json());
+  assert.equal(live.backerCount, 2);
+  assert.equal(live.bonusesPaid, 2);
+  assert.equal(live.unfiredStake, 0);
+  assert.equal(live.poolNow, 6);                                      // 8 backed - 2 bonus; no unfired stake while live
+
+  const alice = await fetch(`${base}/runs/${runId}/my-position?user=alice`).then((r) => r.json());
+  const bob = await fetch(`${base}/runs/${runId}/my-position?user=bob`).then((r) => r.json());
+  assert.equal(alice.sharePct, 75); assert.equal(bob.sharePct, 25);
+  assert.equal(alice.payoutNowMicro, Number(proRata(6_000_000n, 6_000_000n, 8_000_000n)));
+  assert.equal(bob.payoutNowMicro, Number(proRata(6_000_000n, 2_000_000n, 8_000_000n)));
+  assert.equal(alice.payoutNowUsd, 4.5); assert.equal(bob.payoutNowUsd, 1.5);
+
+  // a second mine that never fires: its stake joins the pool once the run is over
+  await post(base, "/dev/credit", { user: "dave", amount: 1 });
+  await post(base, `/runs/${runId}/plant-fiat`, { user: "dave", commitmentHex: await treasuryCommitment(base, "zzzq"), stake: 1 });
+  // finish the run (defuse the only tile)
+  const end = await fetch(`${base}/api/v1/runs/${runId}/defuse`, { method: "POST", headers: auth, body: "{}" }).then((r) => r.json());
+  assert.ok(end.status !== "live");
+  assert.equal(end.unfiredStake, 1);
+  assert.equal(end.poolNow, 7);
+  const shown = await fetch(`${base}/runs/${runId}/my-position?user=alice`).then((r) => r.json());
+  assert.equal(shown.payoutNowMicro, Number(proRata(7_000_000n, 6_000_000n, 8_000_000n)));
+  const before = (await fetch(`${base}/api/v1/fiat/balance?user=alice`).then((r) => r.json())).balanceMicro;
+  const settled = await post(base, `/runs/${runId}/settle`, {}).then((r) => r.json());
+  const after = (await fetch(`${base}/api/v1/fiat/balance?user=alice`).then((r) => r.json())).balanceMicro;
+  assert.ok(Math.abs(after - before - shown.payoutNowMicro) <= 1, `credited ${after - before}, page showed ${shown.payoutNowMicro}`);
+  assert.ok(Math.abs(settled.paid.alice - shown.payoutNowMicro) <= 1);
+  await app.close();
+});
+
 test("/dev/credit on a non-mock chain is refused with 403", async () => {
   const { app, base } = await boot({ chainKind: "solana" });
   const r = await post(base, "/dev/credit", { user: "alice", amount: 1 });

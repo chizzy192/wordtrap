@@ -27,6 +27,8 @@ export const DEFAULTS: MatchConfig = {
   fireBurn: 22, maxDefuses: 2, maxTurns: 60, hintUsd: 0.001,
 };
 
+const round6 = (n: number) => Math.round(n * 1e6) / 1e6;   // USDC has 6 decimals; keep float sums exact to the micro
+
 /** Byte sent a `turn` that is not the current one (duplicate / replayed request). HTTP 409. */
 export class StaleTurnError extends Error {
   readonly state: BoardState;
@@ -57,10 +59,15 @@ export class Match extends EventEmitter {
   private windowArmed = { count: 0, stake: 0 };
   private busy = false;
 
-  constructor(o: { matchId: string; callsign?: string; chain: Chain; wallet: AgentWallet; oracleUrl: string; cfg?: Partial<MatchConfig>; seed?: number; deck?: Tile[] }) {
+  /** Backers the chain does not see individually (fiat backers behind the treasury); counted into state.backerCount. */
+  private readonly extraBackers: () => number;
+  private bonusesPaid = 0;
+
+  constructor(o: { matchId: string; callsign?: string; chain: Chain; wallet: AgentWallet; oracleUrl: string; cfg?: Partial<MatchConfig>; seed?: number; deck?: Tile[]; extraBackers?: () => number }) {
     super();
     this.cfg = { ...DEFAULTS, ...o.cfg };
     this.chain = o.chain; this.wallet = o.wallet; this.oracleUrl = o.oracleUrl;
+    this.extraBackers = o.extraBackers ?? (() => 0);
     this.seed = o.seed ?? (Date.now() >>> 0);
     this.tiles = o.deck ? o.deck.slice(0, this.cfg.tiles) : dealTiles(this.cfg.tiles, this.seed);
     this.state = {
@@ -69,6 +76,7 @@ export class Match extends EventEmitter {
       hand: [], fuse: this.cfg.fuse, fuseTotal: this.cfg.fuse, hint: null,
       spoken: [], challenged: [], traps: [], backerTotal: 0, trapTotal: 0,
       defusesLeft: this.cfg.maxDefuses, hintsBought: 0, hintSpendUsd: 0, score: 0,
+      backingOpen: true, backerCount: 0, bonusesPaid: 0, unfiredStake: 0, poolNow: 0,
     };
     this.dealHand();
     this.chain.onTrapPlanted((t) => {
@@ -234,6 +242,7 @@ export class Match extends EventEmitter {
   private onFired(e: TrapFiredEvent) {
     this.fired.add(e.word);
     this.wave.push(e);
+    this.bonusesPaid += Math.max(0, e.payout - e.trap.stake);   // the bonus came out of the backers' pool
     this.burn(this.cfg.fireBurn);
     this.sync();
     this.push({ type: "trap_fired", trap: e.trap, payout: e.payout, fuseBurn: this.cfg.fireBurn });
@@ -244,7 +253,22 @@ export class Match extends EventEmitter {
     const s = this.chain.snapshot();
     this.state.traps = s.traps; this.state.backerTotal = s.backerTotal; this.state.trapTotal = s.trapTotal;
     this.state.score = this.state.position * 100 + Math.max(0, this.state.fuse);
+    // Money for the "Pick a side" page. Backing closes when the first tile clears or at turn 6.
+    this.state.backingOpen = this.state.status === "live" && this.state.position === 0 && this.state.turn < 6;
+    this.state.backerCount = s.backerCount + this.extraBackers();
+    this.state.bonusesPaid = round6(this.bonusesPaid);
+    // A mine "can no longer fire" only once the run is over; until then every armed mine is live.
+    this.state.unfiredStake = this.state.status === "live" ? 0 : round6(s.traps.filter((t) => t.status !== "fired").reduce((n, t) => n + t.stake, 0));
+    this.state.poolNow = round6(this.state.backerTotal - this.state.bonusesPaid + this.state.unfiredStake);
     this.push({ type: "state", state: this.snapshot() });
+  }
+
+  /** Why backing is closed, for the HTTP error. */
+  backingClosedReason(): string | null {
+    if (this.state.backingOpen) return null;
+    if (this.state.status !== "live") return "Backing closed when the run ended.";
+    if (this.state.position > 0) return "Backing closed when Byte cleared the first tile.";
+    return "Backing closed at turn 6.";
   }
 
   private push(e: FeedEvent) { this.emit("feed", e); }

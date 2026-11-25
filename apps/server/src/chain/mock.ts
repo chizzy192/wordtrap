@@ -100,6 +100,7 @@ export class MockChain implements Chain {
     return {
       turn: this.turn,
       backerTotal: Number(this.backerTotal) / USDC,
+      backerCount: [...this.backers.keys()].filter((u) => u !== "treasury").length,   // fiat backers are counted by the server ledger
       trapTotal: [...this.traps.values()].reduce((n, t) => n + t.stake, 0),
       traps: [...this.traps.values()].map((t) => this.view(t)),
     };

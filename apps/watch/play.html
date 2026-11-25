@@ -135,7 +135,8 @@ async function loadRooms() {
     </div>`).join("") : `<span class="empty">${EMPTY}</span>`;
 }
 
-function go(code) { location.href = `/watch/${encodeURIComponent(code)}${location.search.includes("theme=") ? "?" + new URLSearchParams({ theme: new URLSearchParams(location.search).get("theme") }) : ""}`; }
+// Joining lands on the "Pick a side" page for that room.
+function go(code) { location.href = `/side/${encodeURIComponent(code)}${location.search.includes("theme=") ? "?" + new URLSearchParams({ theme: new URLSearchParams(location.search).get("theme") }) : ""}`; }
 
 $("quick").onclick = async () => {
   const b = $("quick"); b.classList.add("pressed"); b.disabled = true; const label = b.textContent; b.textContent = "Finding a room";

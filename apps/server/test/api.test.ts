@@ -7,7 +7,7 @@ import { decide } from "../src/driver.ts";
 const ROUTE: Record<string, string> = { play_word: "play", buy_hint: "hint", defuse_tile: "defuse", challenge_word: "challenge", pass_turn: "pass" };
 
 test("Byte Arena contract over real HTTP: start → state → bad word 400 → play 200 → 401 → 409 → finish", async () => {
-  const app = createApp({ sim: false, makeChain: async () => new MockChain(), cfg: { tiles: 1 } });
+  const app = createApp({ sim: false, makeChain: async () => new MockChain(), cfg: { tiles: 1 }, spectateDelay: 0 });
   const port = await app.listen(0);
   const base = `http://127.0.0.1:${port}`;
   const post = (path: string, body: unknown, key?: string) =>
@@ -100,8 +100,54 @@ test("Byte Arena contract over real HTTP: start → state → bad word 400 → p
   await app.close();
 });
 
+test("spectator delay: delay=0 is the live feed, delay=5 holds an event back for 5 s, finished runs serve their end state", async () => {
+  const app = createApp({ sim: false, makeChain: async () => new MockChain(), cfg: { tiles: 1 }, spectateDelay: 0 });
+  const port = await app.listen(0);
+  const base = `http://127.0.0.1:${port}`;
+  const { runId, apiKey, state } = await fetch(`${base}/api/v1/runs`, { method: "POST", body: JSON.stringify({ callsign: "slow" }) }).then((r) => r.json());
+  const auth = { "content-type": "application/json", authorization: `Bearer ${apiKey}` };
+  const live0 = await fetch(`${base}/runs/${runId}/spectate?delay=0`).then((r) => r.json());
+  assert.equal(live0.state.turn, 1);
+  assert.equal(live0.delay, 0);
+
+  const t0 = Date.now();
+  await fetch(`${base}/api/v1/runs/${runId}/play`, { method: "POST", headers: auth, body: JSON.stringify({ word: state.hand[0] }) });
+  // the Byte API answered immediately; the live feed shows the move; the delayed feed does not yet
+  const live = await fetch(`${base}/runs/${runId}/spectate?delay=0`).then((r) => r.json());
+  assert.equal(live.state.turn, 2);
+  assert.ok(live.events.some((e: any) => e.type === "action"));
+  const held = await fetch(`${base}/runs/${runId}/spectate?delay=5&paced=1`).then((r) => r.json());
+  assert.equal(held.state.turn, 1, "state as it was 5 s ago");
+  assert.deepEqual(held.events, []);
+  assert.equal(held.seq, 0, "cursor does not advance past held events");
+  assert.equal(held.delay, 5);
+  await new Promise((r) => setTimeout(r, 4000));
+  const still = await fetch(`${base}/runs/${runId}/spectate?delay=5`).then((r) => r.json());
+  assert.equal(still.state.turn, 1);
+  await new Promise((r) => setTimeout(r, Math.max(0, t0 + 5300 - Date.now())));
+  const now = await fetch(`${base}/runs/${runId}/spectate?delay=5&paced=1`).then((r) => r.json());
+  assert.equal(now.state.turn, 2);
+  const action = now.events.find((e: any) => e.type === "action");
+  assert.ok(action, "the move is served once 5 s have passed");
+  assert.equal(action.state.turn, 2, "paced events carry the board snapshot after that event");
+  assert.ok(now.seq >= 1);
+  assert.equal((await fetch(`${base}/runs/${runId}/spectate?delay=99`).then((r) => r.json())).delay, 20, "delay is clamped to 20");
+
+  // finish the run: the live feed ends now, the delayed feed ends once the delay has passed
+  const done = await fetch(`${base}/api/v1/runs/${runId}/defuse`, { method: "POST", headers: auth, body: "{}" }).then((r) => r.json());
+  assert.equal(done.status, "escaped");
+  const tEnd = Date.now();
+  assert.equal((await fetch(`${base}/runs/${runId}/spectate?delay=0`).then((r) => r.json())).state.status, "escaped");
+  assert.equal((await fetch(`${base}/runs/${runId}/spectate?delay=2`).then((r) => r.json())).state.status, "live");
+  await new Promise((r) => setTimeout(r, Math.max(0, tEnd + 2300 - Date.now())));
+  const fin = await fetch(`${base}/runs/${runId}/spectate?delay=2`).then((r) => r.json());
+  assert.equal(fin.state.status, "escaped");
+  assert.deepEqual(fin.state, done);
+  await app.close();
+});
+
 test("mock-mode planter: a browser viewer plants on a hand word and the reveal pays out", async () => {
-  const app = createApp({ sim: false, makeChain: async () => { const c = new MockChain(); await c.backByte("alice", 10); return c; } });
+  const app = createApp({ sim: false, makeChain: async () => { const c = new MockChain(); await c.backByte("alice", 10); return c; }, spectateDelay: 0 });
   const port = await app.listen(0);
   const base = `http://127.0.0.1:${port}`;
   const { runId, apiKey, state } = await fetch(`${base}/api/v1/runs`, { method: "POST", body: JSON.stringify({ callsign: "b" }) }).then((r) => r.json());

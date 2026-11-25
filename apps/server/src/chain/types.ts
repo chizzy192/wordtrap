@@ -20,7 +20,7 @@ export interface Chain {
   /** Server never knows trap words; it only learns them when a setter reveals. */
   onTrapFired(cb: (e: TrapFiredEvent) => void): void;
   onTrapPlanted(cb: (t: ChainTrap) => void): void;
-  snapshot(): { turn: number; backerTotal: number; trapTotal: number; traps: ChainTrap[] };
+  snapshot(): { turn: number; backerTotal: number; backerCount: number; trapTotal: number; traps: ChainTrap[] };
   /** The server's custodial key: on-chain setter/backer for fiat (Pollar) viewers. `setter` is the
    *  id passed to plantTrap/revealTrap/backByte; `pubkey` is what goes into the commitment hash. */
   treasury(): { setter: string; pubkey: Uint8Array };

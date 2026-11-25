@@ -34,7 +34,7 @@ export default function App() {
           if (!cur.runId) return;
           id = cur.runId; seq.current = 0; setRunId(id);
         }
-        const r = await fetch(`${SERVER}/runs/${id}/spectate?after=${seq.current}`);
+        const r = await fetch(`${SERVER}/runs/${id}/spectate?after=${seq.current}&delay=0`);   // the phone reveals against the real game
         if (!r.ok) { if (r.status === 404) { id = null; setRunId(null); } return; }
         const { seq: s, events, state: st } = await r.json();
         if (!alive) return;

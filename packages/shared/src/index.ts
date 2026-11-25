@@ -119,6 +119,12 @@ export interface BoardState {
   hintsBought: number;
   hintSpendUsd: number;
   score: number;             // position * 100 + max(0, fuse)
+  // --- money, for the "Pick a side" page ---
+  backingOpen: boolean;      // backers may still join: before the first tile clears and before turn 6
+  backerCount: number;       // people backing Byte (on-chain backers plus fiat backers)
+  bonusesPaid: number;       // USDC paid out of the pool to setters so far (payouts minus their stakes)
+  unfiredStake: number;      // stakes of mines that can no longer fire (known once the run is over)
+  poolNow: number;           // backerTotal - bonusesPaid + unfiredStake: what backers would share right now
 }
 
 export type FeedEvent =

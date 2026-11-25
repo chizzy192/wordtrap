@@ -7,10 +7,15 @@ import type { Chain } from "./chain/types.ts";
 import { Match, type MatchConfig } from "./match.ts";
 import { SimWallet, type AgentWallet } from "./wallet.ts";
 
-export interface SeqEvent { seq: number; e: FeedEvent }
-export interface Run { id: string; key: string; match: Match; chain: Chain; events: SeqEvent[]; seq: number; startedAt: number }
+export interface SeqEvent { seq: number; t: number; e: FeedEvent }
+/** The board as it was right after event `seq` (seq 0 = before the first event). */
+export interface Snapshot { seq: number; t: number; state: BoardState }
+export interface Run { id: string; key: string; match: Match; chain: Chain; events: SeqEvent[]; history: Snapshot[]; seq: number; startedAt: number }
 
 export const MAX_EVENTS = 200;
+/** Spectator delay: snapshots kept per run so GET /spectate?delay=N can serve the board as it was N seconds ago. */
+export const MAX_SNAPSHOTS = 60;
+export const MAX_DELAY_SECONDS = 20;
 
 export interface RunManagerOptions {
   makeChain: () => Promise<Chain>;
@@ -20,6 +25,8 @@ export interface RunManagerOptions {
   cfg?: Partial<MatchConfig>;
   /** Called before the match starts — SIM mode attaches the simulated crowd here. */
   onRun?: (run: Run) => void;
+  /** Backers the chain cannot see individually for this run (fiat backers behind the treasury). */
+  extraBackers?: (runId: string) => number;
 }
 
 export class RunManager {
@@ -34,11 +41,20 @@ export class RunManager {
     const match = new Match({
       matchId: runId, callsign, chain, wallet: (this.o.makeWallet ?? (() => new SimWallet()))(),
       oracleUrl: this.o.oracleUrl(runId), cfg: this.o.cfg, seed,
+      extraBackers: () => this.o.extraBackers?.(runId) ?? 0,
     });
-    const run: Run = { id: runId, key: apiKey, match, chain, events: [], seq: 0, startedAt: Date.now() };
+    const run: Run = { id: runId, key: apiKey, match, chain, events: [], history: [], seq: 0, startedAt: Date.now() };
     match.on("feed", (e: FeedEvent) => {
-      if (e.type === "state") return;                 // state rides along with every spectate reply
-      run.events.push({ seq: ++run.seq, e });
+      const t = Date.now();
+      if (e.type === "state") {
+        // One snapshot per event seq (the last state after that event wins); this is what the delayed feed serves.
+        const last = run.history.at(-1);
+        if (last && last.seq === run.seq) { last.t = t; last.state = e.state; }
+        else run.history.push({ seq: run.seq, t, state: e.state });
+        if (run.history.length > MAX_SNAPSHOTS) run.history.splice(0, run.history.length - MAX_SNAPSHOTS);
+        return;
+      }
+      run.events.push({ seq: ++run.seq, t, e });
       if (run.events.length > MAX_EVENTS) run.events.splice(0, run.events.length - MAX_EVENTS);
     });
     this.runs.set(runId, run);
@@ -64,7 +80,23 @@ export class RunManager {
     return best;
   }
 
-  spectate(run: Run, after = 0): { seq: number; events: FeedEvent[]; state: BoardState } {
-    return { seq: run.seq, events: run.events.filter((x) => x.seq > after).map((x) => x.e), state: run.match.snapshot() };
+  /**
+   * Spectator feed. `delaySec` serves events and state as they were that many seconds ago so the
+   * board stays in step with Byte's narration; `paced` attaches the board snapshot to every event so
+   * the page can replay them one at a time. `seq` is the last event served, so held-back events are
+   * delivered on a later poll. The Byte API is never delayed.
+   */
+  spectate(run: Run, after = 0, delaySec = 0, paced = false): { seq: number; events: (FeedEvent & { state?: BoardState })[]; state: BoardState; delay: number } {
+    const delay = Math.min(MAX_DELAY_SECONDS, Math.max(0, Number.isFinite(delaySec) ? delaySec : 0));
+    if (delay === 0 && !paced) {
+      return { seq: run.seq, events: run.events.filter((x) => x.seq > after).map((x) => x.e), state: run.match.snapshot(), delay };
+    }
+    const cutoff = Date.now() - delay * 1000;
+    const snapAt = (seq: number) => [...run.history].reverse().find((h) => h.seq <= seq) ?? run.history[0];
+    const served = run.events.filter((x) => x.seq > after && x.t <= cutoff);
+    const latest = [...run.history].reverse().find((h) => h.t <= cutoff) ?? run.history[0];   // oldest kept if the cap dropped older ones
+    const state = delay === 0 ? run.match.snapshot() : (latest?.state ?? run.match.snapshot());
+    const events = served.map((x) => (paced ? { ...x.e, state: snapAt(x.seq)?.state } : x.e));
+    return { seq: served.length ? served[served.length - 1].seq : Math.min(after, run.seq), events, state, delay };
   }
 }

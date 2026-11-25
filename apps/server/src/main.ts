@@ -46,6 +46,8 @@ export interface AppOptions {
   ledgerPath?: string | null;
   /** Pollar gateway. Default: PollarHttp when POLLAR_SECRET_KEY is set, else MockPollar (demo credits). */
   pollar?: PollarGateway;
+  /** Default spectator delay in seconds for GET /runs/:id/spectate (env SPECTATE_DELAY_SECONDS, default 4). Never affects the Byte API. */
+  spectateDelay?: number;
 }
 
 export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
@@ -78,6 +80,8 @@ export function createApp(o: AppOptions = {}): App {
   let port = 0;
 
   const chainKind = o.chainKind ?? (process.env.CHAIN === "solana" ? "solana" : "mock");
+  const envDelay = Number(process.env.SPECTATE_DELAY_SECONDS);
+  const spectateDelay = Math.min(20, Math.max(0, o.spectateDelay ?? (Number.isFinite(envDelay) ? envDelay : 4)));
   const ledger = new FiatLedger(o.ledgerPath === undefined ? (process.env.FIAT_LEDGER_PATH ?? LEDGER_DEFAULT) : o.ledgerPath);
   const pollar = o.pollar ?? pollarFromEnv();
 
@@ -85,6 +89,7 @@ export function createApp(o: AppOptions = {}): App {
     makeChain,
     cfg: o.cfg,
     oracleUrl: (id) => `http://127.0.0.1:${port}/oracle/risk?run=${id}`,
+    extraBackers: (id) => Object.keys(ledger.backersOf(id)).length,
     onRun: (run: Run) => {
       // Fiat mines: when the treasury's trap fires, pay the viewer who owns it (idempotent per trap).
       run.chain.onTrapFired((e) => { if (ledger.trapOwner(e.trap.id)) ledger.payTrap(e.trap.id, Math.round(e.payout * MICRO)); });
@@ -169,6 +174,14 @@ export function createApp(o: AppOptions = {}): App {
         }
       }
 
+      // ---- "Pick a side" page: a second entry of the stake build (apps/stake/side.html) ----
+      if (p === "/side" || /^\/side\/[^/]+$/.test(p)) {
+        try {
+          const body = await readFile(fileURLToPath(new URL("../../stake/dist/side.html", import.meta.url)));
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+          return res.end(body);
+        } catch { return json(res, 404, { error: "side page not built: run `npm run build -w apps/stake`" }); }
+      }
       // ---- stake page (apps/stake, built with `npm run build -w apps/stake`) ----
       if (p === "/stake" || p.startsWith("/stake/")) {
         const rel = p === "/stake" || p === "/stake/" ? "index.html" : p.slice("/stake/".length);
@@ -209,6 +222,27 @@ export function createApp(o: AppOptions = {}): App {
         const r = await confirmPayment(ledger, pollar, paymentId, user);
         return json(res, 200, { paymentId, ...r, ...bal(user) });
       }
+      // A signed-in backer's position: stake, share of the pool, and the payout if the run ended now (proRata, like the program).
+      const mp = /^\/runs\/([^/]+)\/my-position$/.exec(p);
+      if (mp && req.method === "GET") {
+        const run = runs.get(mp[1]);
+        if (!run) return json(res, 404, { error: `unknown run ${mp[1]}` });
+        const user = await identify(req, Object.fromEntries(url.searchParams));
+        const s = run.match.snapshot();
+        const stakeMicro = ledger.backersOf(run.id)[user] ?? 0;
+        const totalMicro = Math.round(s.backerTotal * MICRO);
+        const poolMicro = Math.round(s.poolNow * MICRO);
+        const payoutNowMicro = stakeMicro > 0 ? Number(proRata(BigInt(poolMicro), BigInt(stakeMicro), BigInt(totalMicro))) : 0;
+        const paidMicro = ledger.trapsOf(user, run.id).filter((t) => t.status === "paid").reduce((n, t) => n + (t.payout ?? 0), 0);
+        return json(res, 200, {
+          runId: run.id, user, backingOpen: s.backingOpen, backingClosed: run.match.backingClosedReason(),
+          stakeMicro, stakeUsd: fromMicro(stakeMicro),
+          sharePct: totalMicro > 0 ? Math.round((10000 * stakeMicro) / totalMicro) / 100 : 0,
+          payoutNowMicro, payoutNowUsd: fromMicro(payoutNowMicro),
+          minesPaidMicro: paidMicro, minesPaidUsd: fromMicro(paidMicro),
+          poolNowUsd: s.poolNow, backerCount: s.backerCount, status: s.status,
+        });
+      }
       const fp = /^\/runs\/([^/]+)\/(plant-fiat|back-fiat|reveal-fiat|settle)$/.exec(p);
       if (fp) {
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });
@@ -245,6 +279,8 @@ export function createApp(o: AppOptions = {}): App {
         }
         if (fp[2] === "back-fiat") {
           if (!chain.backByte) return json(res, 400, { error: "chain cannot back from the server" });
+          const closed = run.match.backingClosedReason();   // server-enforced cut-off (the program itself still accepts back_byte while live)
+          if (closed) throw new FiatError(closed, 400);
           const micro = toMicro(Number(b.amount ?? 0));
           ledger.debit(user, micro, "back byte", run.id);
           try { await chain.backByte(treasury.setter, fromMicro(micro)); }
@@ -276,7 +312,11 @@ export function createApp(o: AppOptions = {}): App {
       if (sp) {
         const run = runs.get(sp[1]);
         if (!run) return json(res, 404, { error: `unknown run ${sp[1]}` });
-        if (sp[2] === "spectate") return json(res, 200, runs.spectate(run, Number(url.searchParams.get("after") ?? 0)));
+        if (sp[2] === "spectate") {
+          const raw = url.searchParams.get("delay");
+          const delay = raw === null || raw === "" || !Number.isFinite(Number(raw)) ? spectateDelay : Number(raw);
+          return json(res, 200, runs.spectate(run, Number(url.searchParams.get("after") ?? 0), delay, url.searchParams.get("paced") === "1"));
+        }
         // Mock-only viewer endpoints (production: viewers sign on-chain txs from mobile/Pollar).
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });
         if (run.chain.kind !== "mock") return json(res, 400, { error: "sign on-chain from the client in solana mode" });

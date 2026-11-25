@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WordTrap — Pick a side</title>
+<meta name="color-scheme" content="light dark" />
+<script>
+(function () {
+  var q = new URLSearchParams(location.search).get("theme");
+  var t = q === "dark" || q === "light" ? q : null;
+  if (!t) { try { t = localStorage.getItem("wt.theme"); } catch (e) {} }
+  if (t !== "dark" && t !== "light") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/side.tsx"></script>
+</body>
+</html>

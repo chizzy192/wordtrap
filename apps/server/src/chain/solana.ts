@@ -15,6 +15,7 @@ export class SolanaChain implements Chain {
   private game: any; private vault: any; private mint: any; private matchId: bigint;
   private traps = new Map<string, ChainTrap>();
   private backerTotal = 0; private turn = 0;
+  private backerKeys = new Set<string>();
   private firedCbs: ((e: TrapFiredEvent) => void)[] = [];
   private plantedCbs: ((t: ChainTrap) => void)[] = [];
 
@@ -51,7 +52,7 @@ export class SolanaChain implements Chain {
       const t: ChainTrap = { id: e.trap.toBase58(), setter: "", stake: e.stake.toNumber() / USDC, armedTurn: e.armedTurn, status: "armed" };
       this.traps.set(t.id, t); this.plantedCbs.forEach((cb) => cb(t));
     });
-    this.program.addEventListener("backed", (e: any) => { if (e.game.equals(this.game)) this.backerTotal += e.amount.toNumber() / USDC; });
+    this.program.addEventListener("backed", (e: any) => { if (e.game.equals(this.game)) { this.backerTotal += e.amount.toNumber() / USDC; this.backerKeys.add(String(e.user ?? e.backer ?? this.backerKeys.size)); } });
     this.program.addEventListener("trapFired", (e: any) => {
       if (!e.game.equals(this.game)) return;
       const t = this.traps.get(e.trap.toBase58());
@@ -90,6 +91,6 @@ export class SolanaChain implements Chain {
   onTrapPlanted(cb: (t: ChainTrap) => void) { this.plantedCbs.push(cb); }
   snapshot() {
     const traps = [...this.traps.values()];
-    return { turn: this.turn, backerTotal: this.backerTotal, trapTotal: traps.reduce((n, t) => n + t.stake, 0), traps };
+    return { turn: this.turn, backerTotal: this.backerTotal, backerCount: this.backerKeys.size, trapTotal: traps.reduce((n, t) => n + t.stake, 0), traps };
   }
 }

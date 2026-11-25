@@ -5,6 +5,6 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "/stake/",
-  build: { outDir: "dist", emptyOutDir: true },
+  build: { outDir: "dist", emptyOutDir: true, rollupOptions: { input: { main: "index.html", side: "side.html" } } },
   server: { proxy: { "/api": "http://localhost:8787", "/runs": "http://localhost:8787", "/dev": "http://localhost:8787" } },
 });
