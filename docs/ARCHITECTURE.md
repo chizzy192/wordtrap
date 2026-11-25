@@ -143,6 +143,60 @@ move Byte sent over HTTP, and the spectator feed shows it.
 `score`. `FeedEvent` is `state | action | hint | trap_planted | trap_fired | match_end`.
 `turn_window` and `narration` are gone. Hashing, tokenize, `trapFired` and money helpers are untouched.
 
+## Fiat staking (Pollar)
+
+Viewers who would never install a wallet sign in with Google through Pollar (or connect an external
+Solana wallet) and hold a **ledger balance in integer micro-USD** on our server. The server's
+**treasury keypair** is the on-chain setter and backer for all of them, so the Anchor program is
+unchanged: a fiat mine is an ordinary `plant_trap` signed by the treasury, and the browser computes
+the commitment with the treasury pubkey (`GET /api/v1/treasury`, also `state.treasury`).
+
+**Ledger credits require server-side verification via Pollar Server API v3; client callbacks are hints, not money.**
+
+```mermaid
+sequenceDiagram
+  participant V as Viewer browser (apps/stake)
+  participant P as Pollar
+  participant S as Game server (fiat.ts)
+  participant C as Chain (treasury signs)
+  participant B as Byte (HTTP)
+  V->>P: Google sign-in · top-up (card / Pix / QR)
+  P-->>V: payment id (hint)
+  V->>S: POST /api/v1/fiat/confirm {paymentId}
+  S->>P: GET payment by id (secret key)
+  P-->>S: status + amount
+  S->>S: credit ledger exactly once per payment id (pending if unverifiable)
+  V->>V: salt + word stay in localStorage; commitment = sha256(v1|word|salt|TREASURY)
+  V->>S: POST /runs/:id/plant-fiat {commitmentHex, stake}
+  S->>S: debit ledger, record trapId → user
+  S->>C: plant_trap (setter = treasury)
+  B->>S: POST /runs/:id/play {word}
+  S->>C: record_word
+  V->>S: POST /runs/:id/reveal-fiat {trapId, word, saltHex}  (spectate feed showed the word was played)
+  S->>S: verify commitment server-side
+  S->>C: reveal_trap (treasury)
+  C-->>S: TrapFired(payout)
+  S->>S: credit owner via trapId → user map
+  V->>P: off-ramp to bank [ROADMAP]
+```
+
+| Invariant | Where |
+|---|---|
+| I1 treasury is the on-chain setter; browser hashes with the treasury pubkey | `Chain.treasury()`, `/api/v1/treasury`, `state.treasury` |
+| I2 word + salt stay in the browser until played; server reveals as treasury; no browser keys | `apps/stake/src/App.tsx`, `/runs/:id/reveal-fiat` |
+| I3 integer micro-USD everywhere | `fiat.ts` (`MICRO`, `toMicro`) |
+| I4 every change persisted with write-then-rename to `data/fiat-ledger.json` | `FiatLedger.save()` |
+| I5 credits only after the server verifies the payment with the secret key; exactly once per payment id; unverifiable → pending + retry | `confirmPayment()`, `PollarHttp`, 30 s retry loop |
+| I6 viewer identity validated server-side (Pollar session); mock mode uses plain `{user}` | `identify()` in `main.ts` |
+
+Demo-credit mode (no `POLLAR_SECRET_KEY`): the same code path with `MockPollar`; `POST /dev/credit`
+registers a fake paid payment and runs it through the verification. It is refused (403) off the mock chain.
+
+**Unverified against Pollar's docs (Nov 25):** docs.pollar.xyz was unreachable and the open-source SDK
+repo documents no server-side payment lookup or session-verification endpoint. `PollarHttp` isolates
+both behind `POLLAR_PAYMENT_PATH` and `POLLAR_SESSION_PATH`; confirm them before any real money.
+Webhooks are not built on purpose (Pollar lists them as upcoming); verification is pull-based.
+
 ## Status
 
 The refactor landed on Nov 25: `engine.ts`, `agent.ts`, the websocket feed and the wall-clock fuse

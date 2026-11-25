@@ -100,6 +100,7 @@ export type MatchStatus = "live" | "dead" | "escaped";
 export interface BoardState {
   matchId: string;
   matchPda?: string;         // on-chain Game account (solana mode)
+  treasury?: string;         // hex pubkey of the server treasury: the on-chain setter for fiat (Pollar) mines
   callsign?: string;         // Byte's callsign for this run
   status: MatchStatus;
   turn: number;

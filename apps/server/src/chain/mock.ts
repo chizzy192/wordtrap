@@ -89,6 +89,10 @@ export class MockChain implements Chain {
     return out;
   }
 
+  /** Mock treasury: the name "treasury", hashed like every other mock key. */
+  treasury() { return { setter: "treasury", pubkey: mockKey("treasury") }; }
+  trapCommitment(trapId: string) { return this.traps.get(trapId)?.commitment; }
+
   onTrapFired(cb: (e: TrapFiredEvent) => void) { this.ev.on("fired", cb); }
   onTrapPlanted(cb: (t: ChainTrap) => void) { this.ev.on("planted", cb); }
 

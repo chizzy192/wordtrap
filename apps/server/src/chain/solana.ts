@@ -62,6 +62,8 @@ export class SolanaChain implements Chain {
   }
 
   address() { return this.game?.toBase58(); }
+  /** The referee/authority keypair doubles as the custodial treasury for fiat viewers. */
+  treasury() { const pk = this.provider.wallet.publicKey; return { setter: pk.toBase58(), pubkey: new Uint8Array(pk.toBytes()) }; }
   private auth() { return { authority: this.provider.wallet.publicKey, game: this.game }; }
   async startMatch() { await this.program.methods.startMatch().accounts(this.auth()).rpc(); this.turn = 1; }
   async advanceTurn() { await this.program.methods.advanceTurn().accounts(this.auth()).rpc(); return ++this.turn; }

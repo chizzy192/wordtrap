@@ -19,7 +19,7 @@ use anchor_lang::prelude::*;
 use solana_sha256_hasher::hashv;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("2f3m7iDZvMhZFfMeBi2GbhmmX9G9AcdekNtaDWMoMZNE");
 
 pub const MAX_TURNS: u16 = 128;
 pub const MAX_WORD_LEN: usize = 32;

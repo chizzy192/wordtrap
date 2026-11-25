@@ -10,7 +10,7 @@
 //   5. await turn hooks (sim crowd planting between Byte's calls), return the full state
 import { EventEmitter } from "node:events";
 import type { ActionType, BoardState, FeedEvent, MatchStatus } from "@wordtrap/shared";
-import { ACTIONS, normalizeWord, isMineable } from "@wordtrap/shared";
+import { ACTIONS, normalizeWord, isMineable, toHex } from "@wordtrap/shared";
 import type { Chain, TrapFiredEvent } from "./chain/types.ts";
 import type { AgentWallet } from "./wallet.ts";
 import { buyRisk, type RiskContext } from "./oracle.ts";
@@ -64,7 +64,7 @@ export class Match extends EventEmitter {
     this.seed = o.seed ?? (Date.now() >>> 0);
     this.tiles = o.deck ? o.deck.slice(0, this.cfg.tiles) : dealTiles(this.cfg.tiles, this.seed);
     this.state = {
-      matchId: o.matchId, callsign: o.callsign, status: "live", turn: 0, position: 0,
+      matchId: o.matchId, callsign: o.callsign, treasury: toHex(this.chain.treasury().pubkey), status: "live", turn: 0, position: 0,
       tiles: this.tiles.map((t) => ({ prompt: t.prompt, cleared: false, needed: t.needed, played: [] })),
       hand: [], fuse: this.cfg.fuse, fuseTotal: this.cfg.fuse, hint: null,
       spoken: [], challenged: [], traps: [], backerTotal: 0, trapTotal: 0,

@@ -143,6 +143,7 @@
       <div class="label">Hidden mines (sha256 commitments)</div>
       <div class="label" style="text-transform:none;letter-spacing:0;color:var(--mine)">mines arm next turn · a challenge only disarms what's already live</div>
       <div class="mines" id="mines"></div>
+      <div class="label" style="text-transform:none;letter-spacing:0;margin-top:10px"><a id="stakeLink" href="/stake/" target="_blank" rel="noreferrer" style="color:var(--safe)">Stake with fiat (Google sign-in via Pollar) ↗</a></div>
       <details>
         <summary>Plant a mine (demo — mobile app does this with MWA)</summary>
         <div class="plant">
@@ -187,6 +188,7 @@ function render() {
   if (!state) return;
   const s = state;
   $("meta").textContent = `run ${s.matchId}${s.callsign ? " · " + s.callsign : ""} · turn ${s.turn} · ${s.status}`;
+  $("stakeLink").href = `/stake/?run=${encodeURIComponent(s.matchId)}`;
   $("live").className = "live" + (s.status === "live" ? "" : " off");
   $("live").textContent = s.status === "live" ? "LIVE" : "OVER";
   const pct = Math.max(0, s.fuse / s.fuseTotal) * 100;

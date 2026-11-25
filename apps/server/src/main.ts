@@ -19,6 +19,8 @@ import { RunManager, type Run } from "./runs.ts";
 import { handleRisk, requirement, simVerifier, facilitatorVerifier } from "./oracle.ts";
 import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
+import { FiatLedger, FiatError, MockPollar, confirmPayment, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway } from "./fiat.ts";
+import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
 
 const WATCH_HTML = fileURLToPath(new URL("../../watch/index.html", import.meta.url));
 const SPEC_JSON = fileURLToPath(new URL("../../../byte.game.json", import.meta.url));
@@ -38,9 +40,16 @@ export interface AppOptions {
   oraclePayTo?: string;
   network?: string;
   facilitator?: string;
+  /** "mock" enables /dev/credit, /runs/:id/plant|reveal and /runs/:id/settle. Default from CHAIN env. */
+  chainKind?: "mock" | "solana";
+  /** Fiat ledger file (atomic JSON). `null` = in-memory. Default data/fiat-ledger.json or FIAT_LEDGER_PATH. */
+  ledgerPath?: string | null;
+  /** Pollar gateway. Default: PollarHttp when POLLAR_SECRET_KEY is set, else MockPollar (demo credits). */
+  pollar?: PollarGateway;
 }
 
-export interface App { server: Server; runs: RunManager; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
+export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
+const LEDGER_DEFAULT = fileURLToPath(new URL("../../../data/fiat-ledger.json", import.meta.url));
 
 async function defaultChain(): Promise<Chain> {
   if (process.env.CHAIN === "solana") {
@@ -68,17 +77,44 @@ export function createApp(o: AppOptions = {}): App {
   const network = o.network ?? "solana-devnet";
   let port = 0;
 
+  const chainKind = o.chainKind ?? (process.env.CHAIN === "solana" ? "solana" : "mock");
+  const ledger = new FiatLedger(o.ledgerPath === undefined ? (process.env.FIAT_LEDGER_PATH ?? LEDGER_DEFAULT) : o.ledgerPath);
+  const pollar = o.pollar ?? pollarFromEnv();
+
   const runs = new RunManager({
     makeChain,
     cfg: o.cfg,
     oracleUrl: (id) => `http://127.0.0.1:${port}/oracle/risk?run=${id}`,
     onRun: (run: Run) => {
+      // Fiat mines: when the treasury's trap fires, pay the viewer who owns it (idempotent per trap).
+      run.chain.onTrapFired((e) => { if (ledger.trapOwner(e.trap.id)) ledger.payTrap(e.trap.id, Math.round(e.payout * MICRO)); });
       const crowd = o.sim ? (o.crowd === false || o.crowd === undefined ? true : o.crowd) : o.crowd;
       if (!crowd) return;
       if (!(run.chain instanceof MockChain)) return;          // CROWD is a no-op on a real chain
       startCrowd(run.match, run.chain, crowd === true ? {} : crowd);
     },
   });
+
+  // Pending Pollar payments (gateway unreachable / still processing) are re-verified in the background.
+  const retry = setInterval(async () => {
+    for (const { id, user } of ledger.pendingPayments()) { try { await confirmPayment(ledger, pollar, id, user); } catch { /* keep pending */ } }
+  }, 30_000);
+  retry.unref();
+
+  /** I6: who is this viewer? Pollar session token (real mode) or a plain {user} (demo-credit mode). */
+  async function identify(req: IncomingMessage, body: Record<string, any>): Promise<string> {
+    if (pollar.kind === "pollar") {
+      const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+      if (!m) throw new FiatError("sign in with Pollar: send Authorization: Bearer <session token>", 401);
+      const s = await pollar.verifySession(m[1].trim());
+      if (!s) throw new FiatError("Pollar session invalid or expired", 401);
+      return s.userId;
+    }
+    const u = String(body.user ?? req.headers["x-user"] ?? "").trim().slice(0, 64);
+    if (!u) throw new FiatError("demo-credit mode: send {user}", 400);
+    return u;
+  }
+  const bal = (user: string) => ({ user, balanceMicro: ledger.balance(user), balanceUsd: fromMicro(ledger.balance(user)) });
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
@@ -128,6 +164,108 @@ export function createApp(o: AppOptions = {}): App {
         }
       }
 
+      // ---- stake page (apps/stake, built with `npm run build -w apps/stake`) ----
+      if (p === "/stake" || p.startsWith("/stake/")) {
+        const rel = p === "/stake" || p === "/stake/" ? "index.html" : p.slice("/stake/".length);
+        if (rel.includes("..")) return json(res, 400, { error: "bad path" });
+        try {
+          const body = await readFile(fileURLToPath(new URL(`../../stake/dist/${rel}`, import.meta.url)));
+          const type = rel.endsWith(".js") ? "text/javascript" : rel.endsWith(".css") ? "text/css" : rel.endsWith(".svg") ? "image/svg+xml" : "text/html; charset=utf-8";
+          res.writeHead(200, { "content-type": type, "cache-control": rel === "index.html" ? "no-store" : "public, max-age=3600" });
+          return res.end(body);
+        } catch { return json(res, 404, { error: "stake page not built: run `npm run build -w apps/stake`" }); }
+      }
+
+      // ---- fiat staking (Pollar): custodial treasury path, see fiat.ts ----
+      if (p === "/api/v1/treasury") {
+        const chain = runs.current()?.chain ?? (await makeChain());
+        const t = chain.treasury();
+        return json(res, 200, { setter: t.setter, pubkeyHex: toHex(t.pubkey), chain: chain.kind, mode: pollar.kind === "pollar" ? "pollar" : "demo-credits" });
+      }
+      if (p === "/api/v1/fiat/balance" && req.method === "GET") {
+        const user = await identify(req, Object.fromEntries(url.searchParams));
+        return json(res, 200, { ...bal(user), mode: pollar.kind, traps: ledger.trapsOf(user), history: ledger.history(user, 20) });
+      }
+      if (p === "/api/v1/fiat/confirm" && req.method === "POST") {
+        const b = await readJson(req);
+        const user = await identify(req, b);
+        const paymentId = String(b.paymentId ?? "").trim();
+        if (!paymentId) throw new FiatError("paymentId required", 400);
+        const r = await confirmPayment(ledger, pollar, paymentId, user);
+        return json(res, r.status === "pending" ? 202 : 200, { paymentId, ...r, ...bal(user) });
+      }
+      if (p === "/dev/credit" && req.method === "POST") {
+        if (chainKind !== "mock" || pollar.kind !== "mock") return json(res, 403, { error: "dev credits only exist in mock mode" });
+        const b = await readJson(req);
+        const user = await identify(req, b);
+        const micro = toMicro(Number(b.amount ?? 0));
+        const paymentId = String(b.paymentId ?? `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+        (pollar as MockPollar).register(paymentId, user, micro);     // the "payment" the gateway will verify
+        const r = await confirmPayment(ledger, pollar, paymentId, user);
+        return json(res, 200, { paymentId, ...r, ...bal(user) });
+      }
+      const fp = /^\/runs\/([^/]+)\/(plant-fiat|back-fiat|reveal-fiat|settle)$/.exec(p);
+      if (fp) {
+        if (req.method !== "POST") return json(res, 405, { error: "POST only" });
+        const run = runs.get(fp[1]);
+        if (!run) return json(res, 404, { error: `unknown run ${fp[1]}` });
+        const chain = run.chain;
+        const treasury = chain.treasury();
+        const b = await readJson(req);
+        if (fp[2] === "settle") {
+          // Mock only: on devnet `finalize` is an on-chain tx by the authority after the reveal deadline.
+          if (!(chain instanceof MockChain)) return json(res, 400, { error: "settle is mock-only; finalize on-chain in solana mode" });
+          if (!run.match.finished()) return json(res, 409, { error: "run still live" });
+          const already = ledger.settled(run.id);
+          if (already) return json(res, 200, { runId: run.id, treasuryPayoutMicro: Object.values(already.paid).reduce((n, x) => n + x, 0), paid: already.paid, duplicate: true });
+          // Same math as the program's finalize/claim_backer: treasury's pro-rata share of what is left in the vault.
+          const deposit = chain.backers.get(treasury.setter) ?? 0n;
+          const treasuryPayout = chain.status === "finalized" ? 0 : Number(proRata(chain.vault, deposit, chain.backerTotal));
+          chain.finalize();
+          const paid = ledger.settleBackers(run.id, treasuryPayout);
+          return json(res, 200, { runId: run.id, treasuryPayoutMicro: treasuryPayout, paid, duplicate: false });
+        }
+        const user = await identify(req, b);
+        if (fp[2] === "plant-fiat") {
+          if (!chain.plantTrap) return json(res, 400, { error: "chain cannot plant from the server" });
+          const commitmentHex = String(b.commitmentHex ?? "").toLowerCase();
+          if (!/^[0-9a-f]{64}$/.test(commitmentHex)) throw new FiatError("commitmentHex must be 32 bytes hex (sha256 of wordtrap:v1|word|salt|TREASURY pubkey)", 400);
+          const micro = toMicro(Number(b.stake ?? 0));
+          ledger.debit(user, micro, "plant mine", commitmentHex.slice(0, 16));
+          let trap;
+          try { trap = await chain.plantTrap({ commitmentHex, stake: fromMicro(micro), setter: treasury.setter }); }
+          catch (e) { ledger.credit(user, micro, "plant refund", commitmentHex.slice(0, 16)); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
+          ledger.ownTrap(trap.id, { user, runId: run.id, stake: micro });
+          return json(res, 200, { trap, ...bal(user) });
+        }
+        if (fp[2] === "back-fiat") {
+          if (!chain.backByte) return json(res, 400, { error: "chain cannot back from the server" });
+          const micro = toMicro(Number(b.amount ?? 0));
+          ledger.debit(user, micro, "back byte", run.id);
+          try { await chain.backByte(treasury.setter, fromMicro(micro)); }
+          catch (e) { ledger.credit(user, micro, "back refund", run.id); throw new FiatError(`back failed: ${(e as Error).message}`, 400); }
+          ledger.recordBacker(run.id, user, micro);
+          run.match.sync();
+          return json(res, 200, { backerTotal: run.match.snapshot().backerTotal, backed: ledger.backersOf(run.id)[user], ...bal(user) });
+        }
+        // reveal-fiat (I2): the browser kept word+salt; we verify against the commitment and reveal as treasury.
+        if (!chain.revealTrap) return json(res, 400, { error: "chain cannot reveal from the server" });
+        const trapId = String(b.trapId ?? "");
+        const owner = ledger.trapOwner(trapId);
+        if (!owner || owner.user !== user) throw new FiatError("not your mine", 403);
+        if (owner.status !== "armed") return json(res, 200, { trapId, status: owner.status, payoutMicro: owner.payout ?? 0, ...bal(user) });
+        const word = normalizeWord(String(b.word ?? ""));
+        const saltHex = String(b.saltHex ?? "").toLowerCase();
+        if (!isMineable(word) || !/^[0-9a-f]{64}$/.test(saltHex)) throw new FiatError("word (mineable) and saltHex (32 bytes) required", 400);
+        const expect = chain.trapCommitment?.(trapId);
+        if (expect && toHex(commitment(word, fromHex(saltHex), treasury.pubkey)) !== expect) throw new FiatError("bad reveal: word or salt does not match this mine's commitment", 400);
+        let fired;
+        try { fired = await chain.revealTrap({ trapId, word, saltHex, setter: treasury.setter }); }
+        catch (e) { throw new FiatError(`reveal rejected: ${(e as Error).message}`, 400); }
+        const after = ledger.trapOwner(trapId)!;      // credited by the onTrapFired hook, synchronously
+        return json(res, 200, { trapId, status: after.status, payoutMicro: after.payout ?? 0, fired, ...bal(user) });
+      }
+
       // ---- spectators: watch page + mobile ----
       const sp = /^\/runs\/([^/]+)\/(spectate|plant|reveal)$/.exec(p);
       if (sp) {
@@ -158,15 +296,15 @@ export function createApp(o: AppOptions = {}): App {
       }
       json(res, 404, { error: "not found" });
     } catch (e) {
-      json(res, 400, { error: (e as Error).message });
+      json(res, e instanceof FiatError ? e.code : 400, { error: (e as Error).message });
     }
   });
 
   return {
-    server, runs,
+    server, runs, ledger, pollar,
     port: () => port,
     listen: (want: number) => new Promise<number>((r) => server.listen(want, () => { port = (server.address() as any).port; r(port); })),
-    close: () => new Promise<void>((r) => server.close(() => r())),
+    close: () => { clearInterval(retry); return new Promise<void>((r) => server.close(() => r())); },
   };
 }
 
@@ -205,6 +343,7 @@ if (isMain) {
   const port = await app.listen(PORT);
   const mode = SIM ? "SIM (crowd + self-play driver)" : CROWD ? "CROWD (simulated viewers on every run)" : process.env.CHAIN ?? "mock";
   console.log(`WordTrap ${mode} · api http://localhost:${port}/api/v1 · spec /api/v1/spec · watch /watch/<runId>`);
+  console.log(`fiat: ${app.pollar.kind === "pollar" ? "Pollar (server-verified payments)" : "demo credits (POLLAR_SECRET_KEY unset)"} · ledger ${app.ledger.path ?? "in-memory"} · stake page /stake/`);
   if (CROWD && process.env.CHAIN !== "solana") console.log(`crowd: ${crowd.setters} setters · aggression ${crowd.aggression} · backers $${crowd.backerUsd}`);
   if (SIM) {
     const base = `http://127.0.0.1:${port}`;

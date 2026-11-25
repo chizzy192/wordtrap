@@ -53,6 +53,10 @@ Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) 
 | `PORT` | 8787 | Listen port. |
 | `CHAIN=solana` | mock | Real devnet program via `RPC_URL`, `AUTHORITY_KEYPAIR`, `USDC_MINT`. `CROWD` is a no-op here (warning at startup). |
 | `X402_FACILITATOR`, `ORACLE_PAYTO`, `X402_NETWORK` | sim verifier | Real x402 settlement for the risk oracle. |
+| `POLLAR_SECRET_KEY` | unset = demo credits | Server-side Pollar key: payments and viewer sessions are verified with it before any ledger credit. Never ship it to a browser. |
+| `POLLAR_API_URL`, `POLLAR_PAYMENT_PATH`, `POLLAR_SESSION_PATH` | `https://sdk.api.pollar.xyz/v3`, `/payments/{id}`, `/auth/session` | Pollar Server API endpoints. Unconfirmed against the docs (site unreachable on Nov 25); set them from the docs before real money. |
+| `FIAT_LEDGER_PATH` | `data/fiat-ledger.json` | Atomic JSON ledger: balances, payment ids, trap ownership, backer shares. |
+| `VITE_POLLAR_PUBLISHABLE_KEY`, `VITE_POLLAR_BASE_URL`, `VITE_SERVER_URL` | unset | Build-time settings for `apps/stake` (browser). |
 
 ## The API Byte plays
 
@@ -73,10 +77,27 @@ curl -s -H "Authorization: Bearer $KEY" localhost:8787/api/v1/runs/$ID/state | j
 curl -s -H "Authorization: Bearer $KEY" -d '{"word":"alpaca"}' localhost:8787/api/v1/runs/$ID/play | jq .fuse
 ```
 
+## Fiat staking (Pollar)
+
+Viewers without a wallet sign in with Google through Pollar and stake from a server-side ledger
+(integer micro-USD). The server treasury is the on-chain setter for all of them; the browser keeps the
+word and salt and reveals through the server once Byte has played the card. Details and invariants:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#fiat-staking-pollar).
+
+```bash
+npm run stake:build                         # builds apps/stake → served by the game server at /stake/
+VITE_POLLAR_PUBLISHABLE_KEY=pk_... npm run build -w apps/stake   # Pollar mode (Google sign-in, card top-ups)
+POLLAR_SECRET_KEY=sk_... npm run dev        # server verifies payments + sessions with Pollar; otherwise demo credits
+```
+
+Without keys the page runs in **demo-credit mode**: `POST /dev/credit` funds a balance (mock chain only),
+and the rest of the flow is identical. Manual walkthrough: `/dev/credit` → plant on `/stake/?run=<id>` →
+Byte plays the card → the page reveals it → payout lands in the balance.
+
 ## Tests
 
 ```bash
-npm test               # TS: Rust↔TS hash parity, mock chain economics, x402 flow, Match rules, full HTTP contract
+npm test               # TS: Rust↔TS hash parity, mock chain economics, x402 flow, Match rules, full HTTP contract, fiat ledger
 npm run program:test   # Rust: firing/challenge logic, bounty cap, pro-rata, word rules, hash vectors
 node scripts/trace.ts 30   # 30 seeded sims, prints Byte's win rate (target 25–40%)
 ```

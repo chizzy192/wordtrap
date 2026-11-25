@@ -4,7 +4,8 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "apps/server"
+    "apps/server",
+    "apps/stake"
   ],
   "scripts": {
     "dev": "node apps/server/src/main.ts",
@@ -13,7 +14,8 @@
     "sim:once": "cross-env SIM=1 FAST=1 ONE_MATCH=1 node apps/server/src/main.ts",
     "trace": "node scripts/trace.ts 30",
     "program:test": "cargo test -p wordtrap",
-    "test": "node --test \"packages/shared/test/*.test.ts\" \"apps/server/test/*.test.ts\""
+    "test": "node --test \"packages/shared/test/*.test.ts\" \"apps/server/test/*.test.ts\"",
+    "stake:build": "npm run build -w apps/stake"
   },
   "engines": {
     "node": ">=22.18"

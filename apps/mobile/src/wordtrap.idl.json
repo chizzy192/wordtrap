@@ -1,0 +1,1085 @@
+{
+  "address": "2f3m7iDZvMhZFfMeBi2GbhmmX9G9AcdekNtaDWMoMZNE",
+  "metadata": {
+    "name": "wordtrap",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "WordTrap: commit-reveal word mines + backer pool"
+  },
+  "instructions": [
+    {
+      "name": "initialize_match",
+      "discriminator": [
+        156,
+        133,
+        52,
+        179,
+        176,
+        29,
+        64,
+        124
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "game",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "match_id",
+          "type": "u64"
+        },
+        {
+          "name": "bounty_multiplier_bps",
+          "type": "u16"
+        },
+        {
+          "name": "reveal_window_secs",
+          "type": "i64"
+        },
+        {
+          "name": "min_stake",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "start_match",
+      "discriminator": [
+        100,
+        246,
+        223,
+        181,
+        176,
+        101,
+        255,
+        19
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "game",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "back_byte",
+      "discriminator": [
+        41,
+        100,
+        6,
+        67,
+        105,
+        172,
+        67,
+        163
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "game",
+          "writable": true
+        },
+        {
+          "name": "backer",
+          "writable": true
+        },
+        {
+          "name": "user_ata",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "plant_trap",
+      "docs": [
+        "`revealer`: a hot key on the setter's phone allowed to fire the reveal without a wallet",
+        "popup. Payout still goes only to the setter's token account."
+      ],
+      "discriminator": [
+        136,
+        145,
+        119,
+        88,
+        31,
+        217,
+        74,
+        118
+      ],
+      "accounts": [
+        {
+          "name": "setter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "game",
+          "writable": true
+        },
+        {
+          "name": "trap",
+          "writable": true
+        },
+        {
+          "name": "setter_ata",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "commitment",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "stake",
+          "type": "u64"
+        },
+        {
+          "name": "revealer",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "record_word",
+      "docs": [
+        "Referee logs a word Byte said aloud (kind = Spoken) or named as a suspected mine",
+        "(kind = Challenged). `word` must already be normalized: lowercase a-z, 1..=32 chars."
+      ],
+      "discriminator": [
+        86,
+        29,
+        225,
+        213,
+        78,
+        225,
+        197,
+        253
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "game"
+        },
+        {
+          "name": "word_log",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "word",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": {
+              "name": "WordKind"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "advance_turn",
+      "discriminator": [
+        20,
+        108,
+        166,
+        78,
+        43,
+        211,
+        57,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "game",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "end_match",
+      "discriminator": [
+        34,
+        116,
+        122,
+        191,
+        100,
+        222,
+        20,
+        117
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "game",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "byte_survived",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "reveal_trap",
+      "docs": [
+        "Setter proves their mined word was spoken while armed. Allowed live (instant on-stream",
+        "detonation) or after the match until the reveal deadline."
+      ],
+      "discriminator": [
+        128,
+        245,
+        164,
+        1,
+        144,
+        191,
+        244,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "setter or their registered revealer key"
+          ],
+          "signer": true
+        },
+        {
+          "name": "game",
+          "writable": true
+        },
+        {
+          "name": "trap",
+          "writable": true
+        },
+        {
+          "name": "word_log"
+        },
+        {
+          "name": "setter_ata",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "word",
+          "type": "string"
+        },
+        {
+          "name": "salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "finalize",
+      "docs": [
+        "After the reveal window, snapshot what is left in the vault for backers."
+      ],
+      "discriminator": [
+        171,
+        61,
+        218,
+        56,
+        127,
+        115,
+        12,
+        217
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true
+        },
+        {
+          "name": "vault"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_backer",
+      "discriminator": [
+        172,
+        148,
+        83,
+        118,
+        116,
+        185,
+        190,
+        133
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "signer": true
+        },
+        {
+          "name": "game"
+        },
+        {
+          "name": "backer",
+          "writable": true
+        },
+        {
+          "name": "user_ata",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "refund_trap",
+      "docs": [
+        "Edge case: nobody backed Byte, so unfired trap stakes have no one to sweep them."
+      ],
+      "discriminator": [
+        143,
+        31,
+        161,
+        7,
+        11,
+        179,
+        63,
+        245
+      ],
+      "accounts": [
+        {
+          "name": "setter",
+          "signer": true
+        },
+        {
+          "name": "game"
+        },
+        {
+          "name": "trap",
+          "writable": true
+        },
+        {
+          "name": "setter_ata",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Backer",
+      "discriminator": [
+        199,
+        128,
+        179,
+        190,
+        2,
+        66,
+        118,
+        252
+      ]
+    },
+    {
+      "name": "Game",
+      "discriminator": [
+        27,
+        90,
+        166,
+        125,
+        74,
+        100,
+        121,
+        18
+      ]
+    },
+    {
+      "name": "Trap",
+      "discriminator": [
+        108,
+        160,
+        85,
+        111,
+        141,
+        66,
+        192,
+        175
+      ]
+    },
+    {
+      "name": "WordLog",
+      "discriminator": [
+        2,
+        59,
+        89,
+        113,
+        199,
+        5,
+        191,
+        231
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "Backer",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "claimed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Game",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "match_id",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "Status"
+              }
+            }
+          },
+          {
+            "name": "turn",
+            "type": "u16"
+          },
+          {
+            "name": "bounty_multiplier_bps",
+            "type": "u16"
+          },
+          {
+            "name": "reveal_window_secs",
+            "type": "i64"
+          },
+          {
+            "name": "min_stake",
+            "type": "u64"
+          },
+          {
+            "name": "backer_total",
+            "type": "u64"
+          },
+          {
+            "name": "bounty_budget",
+            "type": "u64"
+          },
+          {
+            "name": "trap_total",
+            "type": "u64"
+          },
+          {
+            "name": "traps_fired",
+            "type": "u32"
+          },
+          {
+            "name": "reveal_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "final_pool",
+            "type": "u64"
+          },
+          {
+            "name": "byte_survived",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Status",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Live"
+          },
+          {
+            "name": "Ended"
+          },
+          {
+            "name": "Finalized"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Trap",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "setter",
+            "type": "pubkey"
+          },
+          {
+            "name": "revealer",
+            "type": "pubkey"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "stake",
+            "type": "u64"
+          },
+          {
+            "name": "armed_turn",
+            "type": "u16"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "TrapStatus"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TrapStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Armed"
+          },
+          {
+            "name": "Fired"
+          },
+          {
+            "name": "Refunded"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WordKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Spoken"
+          },
+          {
+            "name": "Challenged"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WordLog",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "word_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "spoken_bitmap",
+            "type": "u128"
+          },
+          {
+            "name": "challenged_turn",
+            "type": "u16"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Backed",
+      "type": {
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "backer",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "Finalized",
+      "type": {
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "final_pool",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "MatchEnded",
+      "type": {
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "byte_survived",
+            "type": "bool"
+          },
+          {
+            "name": "reveal_deadline",
+            "type": "i64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "TrapFired",
+      "type": {
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "trap",
+            "type": "pubkey"
+          },
+          {
+            "name": "word",
+            "type": "string"
+          },
+          {
+            "name": "payout",
+            "type": "u64"
+          },
+          {
+            "name": "turn",
+            "type": "u16"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "TrapPlanted",
+      "type": {
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "trap",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake",
+            "type": "u64"
+          },
+          {
+            "name": "armed_turn",
+            "type": "u16"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "TurnAdvanced",
+      "type": {
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "turn",
+            "type": "u16"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "WordRecorded",
+      "type": {
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "word",
+            "type": "string"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "WordKind"
+              }
+            }
+          },
+          {
+            "name": "turn",
+            "type": "u16"
+          }
+        ],
+        "kind": "struct"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "BadParam",
+      "msg": "Invalid parameter"
+    },
+    {
+      "code": 6001,
+      "name": "WrongStatus",
+      "msg": "Match is not in the right status"
+    },
+    {
+      "code": 6002,
+      "name": "StakeTooSmall",
+      "msg": "Stake below match minimum"
+    },
+    {
+      "code": 6003,
+      "name": "TooManyTurns",
+      "msg": "Turn limit reached"
+    },
+    {
+      "code": 6004,
+      "name": "BadWord",
+      "msg": "Word must be 1-32 lowercase a-z characters"
+    },
+    {
+      "code": 6005,
+      "name": "BadReveal",
+      "msg": "Reveal does not match commitment"
+    },
+    {
+      "code": 6006,
+      "name": "NotTriggered",
+      "msg": "Word was not spoken while the trap was armed"
+    },
+    {
+      "code": 6007,
+      "name": "TrapNotArmed",
+      "msg": "Trap is not armed"
+    },
+    {
+      "code": 6008,
+      "name": "RevealClosed",
+      "msg": "Reveal window closed"
+    },
+    {
+      "code": 6009,
+      "name": "RevealStillOpen",
+      "msg": "Reveal window still open"
+    },
+    {
+      "code": 6010,
+      "name": "AlreadyClaimed",
+      "msg": "Already claimed"
+    },
+    {
+      "code": 6011,
+      "name": "Unauthorized",
+      "msg": "Unauthorized"
+    },
+    {
+      "code": 6012,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    }
+  ],
+  "events": [
+    {
+      "discriminator": [
+        42,
+        235,
+        220,
+        40,
+        248,
+        188,
+        206,
+        255
+      ],
+      "name": "Backed"
+    },
+    {
+      "discriminator": [
+        4,
+        77,
+        242,
+        80,
+        20,
+        152,
+        247,
+        252
+      ],
+      "name": "Finalized"
+    },
+    {
+      "discriminator": [
+        13,
+        110,
+        70,
+        20,
+        143,
+        199,
+        207,
+        66
+      ],
+      "name": "MatchEnded"
+    },
+    {
+      "discriminator": [
+        103,
+        134,
+        107,
+        197,
+        233,
+        116,
+        198,
+        67
+      ],
+      "name": "TrapFired"
+    },
+    {
+      "discriminator": [
+        146,
+        170,
+        87,
+        124,
+        162,
+        159,
+        96,
+        9
+      ],
+      "name": "TrapPlanted"
+    },
+    {
+      "discriminator": [
+        29,
+        39,
+        147,
+        212,
+        226,
+        37,
+        72,
+        224
+      ],
+      "name": "TurnAdvanced"
+    },
+    {
+      "discriminator": [
+        23,
+        92,
+        6,
+        39,
+        182,
+        29,
+        223,
+        190
+      ],
+      "name": "WordRecorded"
+    }
+  ]
+}

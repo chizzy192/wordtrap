@@ -3,3 +3,5 @@ target/
 .anchor/
 *.keypair.json
 .env
+data/
+apps/stake/dist/

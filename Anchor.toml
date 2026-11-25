@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-wordtrap = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+wordtrap = "2f3m7iDZvMhZFfMeBi2GbhmmX9G9AcdekNtaDWMoMZNE"
 
 [programs.localnet]
-wordtrap = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+wordtrap = "2f3m7iDZvMhZFfMeBi2GbhmmX9G9AcdekNtaDWMoMZNE"
 
 [provider]
 cluster = "devnet"

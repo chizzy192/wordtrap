@@ -21,6 +21,11 @@ export interface Chain {
   onTrapFired(cb: (e: TrapFiredEvent) => void): void;
   onTrapPlanted(cb: (t: ChainTrap) => void): void;
   snapshot(): { turn: number; backerTotal: number; trapTotal: number; traps: ChainTrap[] };
+  /** The server's custodial key: on-chain setter/backer for fiat (Pollar) viewers. `setter` is the
+   *  id passed to plantTrap/revealTrap/backByte; `pubkey` is what goes into the commitment hash. */
+  treasury(): { setter: string; pubkey: Uint8Array };
+  /** Commitment hex of a planted trap, if this chain can look it up (lets the server reject a bad reveal legibly). */
+  trapCommitment?(trapId: string): string | undefined;
   // Viewer-side calls. In production these are signed by the viewer (mobile MWA / Pollar);
   // the server exposes them only in mock mode for browser demos.
   plantTrap?(a: PlantArgs): Promise<ChainTrap>;

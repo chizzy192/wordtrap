@@ -17,8 +17,9 @@ The on-chain program, the mine economics and the mobile arming flow are untouche
    reference and we rebuild on day 1. The pivot prompt is written so a rebuild is mechanical.
 2. **Sponsor tracks.** hack.dev3pack.xyz lists Best App Overall, Best Mobile App on Solana Mobile and local
    tracks. Confirm the Byte, Agentic and DeFi bounty pages and how many tracks one project can enter.
-3. **Pollar:** the public `@pollar/core` SDK is Stellar-based. Confirm Solana support or drop the track and use
-   Privy / Phantom embedded / Dynamic for social login with gas sponsorship.
+3. **Pollar:** resolved. `@pollar/core` 0.12 supports Solana (SPL payments, sponsored fees). Still needed from
+   the Pollar team: a test publishable key + secret key, and the Server API paths for payment lookup and session
+   verification (`POLLAR_PAYMENT_PATH`, `POLLAR_SESSION_PATH`). Note the npm release is 0.12.0; the README's 0.12.1 is not published.
 4. **Byte deploy host.** We need a public https origin before the spec can be uploaded (localhost and
    private IPs are rejected). Decide Friday morning: Fly.io, Railway or Render, with a dedicated devnet RPC.
 5. **Byte "My games" upload.** Confirm the form fields: spec JSON, prose game document, and whether a test
@@ -55,7 +56,21 @@ Everything below is required by app.bytearena.fun/api/game-spec. Check each item
 | DeFi | USDC vault with bounty budget, pro-rata settlement | ✅ logic · stretch: idle vault USDC earns yield |
 | Agentic | Game server pays the x402 risk oracle on Byte's behalf from a Swig wallet with a spend-limited role | ✅ x402 flow (sim) · ⏳ Swig + facilitator |
 | Solana Mobile | TrapSetter APK: swipe combos, one MWA signature, auto-detonation with no popup | ✅ code · ⏳ polling rewrite + device build |
-| Pollar | Social login + sponsored micro-stakes + off-ramp | ⛔ blocked on question 3 |
+| Pollar | Google sign-in viewers stake fiat on mines via a custodial treasury; see clause table below | ✅ UNBLOCKED (Nov 25): `fiat.ts`, `apps/stake`, 6 tests · ⏳ Pollar keys + endpoint confirmation |
+
+### Pollar track, clause by clause (vs the sponsor pitch)
+
+| Sponsor clause | What we do | Status |
+|---|---|---|
+| Onboarding without a wallet (Google sign-in creates a per-user wallet) | `apps/stake` runs inside `PollarProvider`; `login({ provider: "google" })` | [TESTNET] with a publishable key; demo-credit mode without one [LIVE] |
+| External Solana wallets (Wallet Standard) | `@pollar/solana-wallet-standard-adapter` in Pollar mode; raw `@wallet-standard/app` connect in demo mode | [TESTNET] / [LIVE] |
+| Fiat top-up (card, Pix, bank QR) | `openCardModal({ panel: "fund" })` → payment id → `POST /api/v1/fiat/confirm` → server verifies with the secret key, credits exactly once | [TESTNET]; live corridors per Pollar today: Bolivia bank QR, Brazil Pix, Argentina transfers (none exercised by us) |
+| Sponsored fees / no SOL needed by the viewer | the treasury signs every on-chain plant/reveal/back; viewers hold only a ledger balance | [LIVE] on the mock chain, [TESTNET] on devnet |
+| Micro-stakes in USD | integer micro-USD ledger, `plant-fiat` from $0.10 | [LIVE] |
+| Payouts | `TrapFired` credits the owner; `settle` splits the treasury's backer share pro-rata | [LIVE] (mock) |
+| Off-ramp to bank | not built; Pollar `openRampModal({ direction: "sell" })` exists, our ledger → Pollar withdrawal is not wired | [ROADMAP] |
+| Webhooks | not built on purpose: Pollar lists them as upcoming; we verify by pulling | n/a |
+| Server-side payment lookup + session verification endpoints | `PollarHttp` with configurable paths; **unconfirmed**: docs.pollar.xyz unreachable, not in the SDK repo | ⏳ confirm with the Pollar team |
 
 ## Refactor work list (from the pivot prompt) — done Nov 25
 

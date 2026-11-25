@@ -9,7 +9,7 @@
     "extra": {
       "serverUrl": "https://YOUR-WORDTRAP-SERVER",
       "rpcUrl": "https://api.devnet.solana.com",
-      "programId": "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS",
+      "programId": "2f3m7iDZvMhZFfMeBi2GbhmmX9G9AcdekNtaDWMoMZNE",
       "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
     }
   }
