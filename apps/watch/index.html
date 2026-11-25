@@ -213,7 +213,7 @@ header { display: flex; align-items: center; gap: 14px; padding: 22px 0 10px; fl
 .card.safe .bar { display: none; }
 .card.safe.poppy .w::before { animation: shieldpop .18s var(--snap); }
 @keyframes shieldpop { 0% { transform: scale(0); } 70% { transform: scale(1.2); } 100% { transform: scale(1); } }
-.card.blueshadow:not(.safe) { box-shadow: 5px 5px 0 #2D5BFF; }
+.card.blueshadow:not(.safe), .card.blueshadow.hot, .card.blueshadow.boom { box-shadow: 5px 5px 0 #2D5BFF; }  /* under a shield every remaining card's shadow goes blue */
 .card.blueflash { animation: blueflash .16s steps(2, jump-none); }
 @keyframes blueflash { from { box-shadow: 5px 5px 0 #2D5BFF; background-color: #2D5BFF; } to { background-color: #FFFFFF; } }
 #shieldTag { display: none; position: absolute; top: -16px; right: -14px; background: #2D5BFF; color: #FFFFFF; border: 3px solid #14121A; padding: 4px 10px; font: 600 15px var(--sans); transform: rotate(4deg); }
