@@ -18,7 +18,7 @@ The fuse is an integer that starts at **180**. It does not burn in real time. Ev
 |---|---|---|
 | `play_word` (`word`) | 5 | Plays one card from `state.hand` onto the current tile. The word must be in the hand; anything else is rejected with an error and the current state. If the card is mined and the mine is armed, it detonates in the same response: 22 extra fuse burned, the trapper paid. |
 | `buy_hint` | 3 (plus $0.001 USDC paid over x402) | Buys a risk score from 0 to 1 for every card in the hand. The scores appear in `state.hint` on this and every later response until the tile changes. Scores are computed from public signals only: how obvious a card is for the prompt, which words already detonated, and how much the crowd has staked recently. They are a guess, not a reveal. |
-| `challenge_word` (`word`) | 8 | Names a word Byte suspects is mined **without playing it**. If a mine on that word is already armed, the mine is permanently disarmed and the card is safe to play from then on. The word stays in the hand. A mine planted on the same turn as the challenge still arms on the next turn, so a challenge covers what exists now, not what comes later. |
+| `challenge_word` (`word`) | 8 | Names a word Byte suspects is mined **without playing it**. If a mine on that word is already armed, that mine is disarmed. The card becomes safer, not guaranteed. The word stays in the hand. A mine planted on the same turn as the challenge still arms on the next turn, so a challenge covers what exists now, not what comes later. |
 | `defuse_tile` | 20 | Skips the current tile without playing anything. Only `state.defusesLeft` uses remain (2 per run). |
 | `pass_turn` | 10 | Does nothing. |
 
