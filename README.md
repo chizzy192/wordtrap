@@ -1,58 +1,92 @@
 # WordTrap
 
-**A livestreamed word-survival game where an AI talks out loud and viewers bet USDC on which words it will say.**
+**A turn-based word-survival game for Byte Arena: an AI plays word cards over HTTP, and viewers bet USDC on which cards it will play.**
 
-Byte (an AI agent) has to clear a board of word prompts before its fuse burns out. Viewers secretly
-plant USDC "mines" on words: a mine is a hash of the word, so nobody can see it. Everything Byte says
-is written on-chain, including its own nervous commentary. If Byte says a mined word, the viewer's
-phone reveals it instantly, the mine goes off, the fuse loses time, and the setter wins their stake plus a bounty.
-If Byte reaches the exit, the people who backed Byte collect every mine that never went off.
+Byte (the Byte Arena streamer agent) has to clear a board of word prompts before its fuse burns out.
+Each prompt comes with a visible hand of word cards. Viewers secretly plant USDC "mines" on cards: a
+mine is a hash of the word, so nobody can see it. Every card Byte plays is written on-chain. If Byte
+plays a mined card, the viewer's phone reveals it instantly, the mine goes off, the fuse loses 22, and
+the setter wins their stake plus a bounty. If Byte reaches the exit, the people who backed Byte collect
+every mine that never went off.
+
+Byte is **not** our agent. We publish the game API described in `byte.game.json`; Byte Arena's agent
+calls it and narrates on its own stream. A local driver plays the same API for sims and rehearsal.
 
 ```
-apps/server     game engine · Byte agent · x402 risk oracle · watchUrl feed (Node 22, no build step)
-apps/watch      watchUrl stream overlay (single HTML file)
+byte.game.json  the spec Byte Arena reads (actions, auth, finish, result, watchUrl)
+apps/server     game API · run manager · x402 risk oracle · spectator feed (Node 22, no build step)
+apps/watch      spectator page, framed by app.bytearena.fun, one per run at /watch/:runId
 apps/mobile     TrapSetter Android app (Expo + Mobile Wallet Adapter)
 programs/       Anchor program: commit-reveal mines + backer pool (Rust)
 packages/shared rules shared by everything — hashing is byte-identical to the Rust program
-docs/           ARCHITECTURE.md · HACKATHON_PLAN.md
+scripts/        trace.ts: N seeded sims against the engine, prints the win rate
+docs/           ARCHITECTURE.md · HACKATHON_PLAN.md · GAME_SPEC.md (for the Byte upload form)
 ```
 
 ## Run it in 30 seconds (no wallet, no RPC)
 
 ```bash
 npm install
-npm run sim            # → open http://localhost:8787/watch
-FAST=1 npm run sim     # same, with short arming windows for quick demos
+npm run sim            # a local driver plays runs THROUGH the public HTTP API, forever
+npm run sim:fast       # same, one move every 600 ms
+npm run sim:once       # one run, then exit 0 (escaped) or 3 (dead)
 ```
 
-Sim mode uses an in-memory copy of the on-chain program plus simulated viewers planting and
-revealing mines. Open the "Plant a mine" panel on the watch page to play against Byte yourself.
-Set `ANTHROPIC_API_KEY` to have Byte play with an LLM. Otherwise a scripted Byte plays.
+The console prints each run's watch link, `http://localhost:8787/watch/<runId>`. Open it to see the
+board, Byte's hand, the hidden mines and every detonation. The "Plant a mine" panel lets you mine a
+card yourself; your browser keeps the salt and reveals the mine when Byte plays the card.
+
+Sim mode uses an in-memory copy of the on-chain program plus simulated viewers who mine cards from
+Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) to start a run.
+
+## The API Byte plays
+
+| Call | Auth | Returns |
+|---|---|---|
+| `POST /api/v1/runs` `{ "callsign": "Byte" }` | none | `{ runId, apiKey, state }` |
+| `GET /api/v1/runs/:id/state` | `Authorization: Bearer <apiKey>` | full state, no side effects |
+| `POST /api/v1/runs/:id/play` `{ "word": "...", "turn"?: n }` | Bearer | full state (400 bad word, 409 stale turn, both with `state`) |
+| `POST /api/v1/runs/:id/hint` · `/challenge` `{ "word" }` · `/defuse` · `/pass` | Bearer | full state |
+| `GET /runs/:id/spectate?after=seq` | public | `{ seq, events, state }` for the watch page and phone |
+| `GET /watch/:id` | public | the spectator page, with a `frame-ancestors` CSP header |
+| `GET /api/v1/spec` | public | `byte.game.json` |
+
+```bash
+R=$(curl -s -X POST localhost:8787/api/v1/runs -d '{"callsign":"me"}')
+KEY=$(echo $R | jq -r .apiKey); ID=$(echo $R | jq -r .runId)
+curl -s -H "Authorization: Bearer $KEY" localhost:8787/api/v1/runs/$ID/state | jq .hand
+curl -s -H "Authorization: Bearer $KEY" -d '{"word":"alpaca"}' localhost:8787/api/v1/runs/$ID/play | jq .fuse
+```
 
 ## Tests
 
 ```bash
+npm test               # TS: Rust↔TS hash parity, mock chain economics, x402 flow, Match rules, full HTTP contract
 npm run program:test   # Rust: firing/challenge logic, bounty cap, pro-rata, word rules, hash vectors
-npm test               # TS: Rust↔TS hash parity, mock chain economics, x402 402→pay→200 flow
+node scripts/trace.ts 30   # 30 seeded sims, prints Byte's win rate (target 25–40%)
 ```
 
-## Devnet
+## Devnet + Byte Arena
 
 ```bash
 anchor build && anchor deploy --provider.cluster devnet   # then update declare_id!/Anchor.toml
 CHAIN=solana RPC_URL=... AUTHORITY_KEYPAIR=./referee.json USDC_MINT=... npm run dev
 ```
 
+Deploy the server behind a public **https** host, put that host into `byte.game.json` (`baseUrl` and
+`watchUrl`), and upload the file plus `docs/GAME_SPEC.md` on Byte Arena's "My games" page.
+
 ## Rules
 
-| Action | Effect |
-|---|---|
-| `PLAY_WORD_CARD` | Answer the prompt with at least N words → clear the tile. Every word Byte says is recorded. |
-| `BUY_HINT` | Byte pays $0.001 over x402 to get risk scores for up to 8 words, then picks its action. Once per turn. |
-| `DEFUSE_TILE` | Skip the tile without speaking. Costs 20s of fuse. 2 uses per match. |
-| `CHALLENGE_TRAP` | Byte types one word it thinks is mined, without saying it. If that word is mined, the mine is disarmed from then on. Costs 8s. |
-| `PASS_TURN` | Costs 10s. |
-| Mine fires | Costs 22s of fuse. The setter gets stake + 2× bounty (capped by the backer pool). |
+| Action | Fuse | Effect |
+|---|---|---|
+| `play_word` | 5 | Play one card from the hand. A tile clears after `needed` cards. Mined + armed → detonation. |
+| `buy_hint` | 3 + $0.001 x402 | Risk score 0..1 for every card in the hand, stored in `state.hint`. |
+| `challenge_word` | 8 | Name a suspected mine without playing it. An armed mine on it is disarmed for good. |
+| `defuse_tile` | 20 | Skip the tile. 2 uses per run. |
+| `pass_turn` | 10 | Nothing. |
+| Mine fires | 22 | The setter gets stake + 2× bounty (capped by the backer pool). |
 
-A mine only becomes active on the turn **after** it's planted, so a viewer can never mine a word
-Byte has already started saying. Common words ("the", "and", "I"…) and words of 1–2 letters can't be mined.
+Fuse starts at 180. The run ends on escape, at fuse 0, or at turn 60. Score is `position * 100 + fuse`.
+A mine only becomes active on the turn **after** it's planted, so a viewer can never mine a card
+Byte is already playing. Common words ("the", "and", "I"…) and words of 1–2 letters can't be mined.

@@ -18,6 +18,7 @@
   .logo { font: 26px var(--display); letter-spacing: 1px; }
   .logo b { color: var(--hot); }
   .live { background: var(--hot); color: #fff; padding: 2px 8px; border-radius: 3px; font-weight: 600; font-size: 12px; animation: pulse 1.4s infinite; }
+  .live.off { background: var(--line); animation: none; }
   .meta { color: var(--dim); margin-left: auto; }
   @keyframes pulse { 50% { opacity: .45; } }
 
@@ -43,11 +44,22 @@
   .tile.exit { flex: .6; display: grid; place-items: center; font: 14px var(--display); color: var(--safe); border-style: dashed; }
 
   .prompt { font: 28px/1.15 var(--display); margin: 22px 0 6px; }
+  .need { color: var(--dim); }
   .bubble { margin-top: 14px; background: #1c1827; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; font-size: 18px; min-height: 64px; }
   .bubble .w { display: inline-block; margin-right: .3em; }
   .bubble .w.boom { color: #fff; background: var(--hot); border-radius: 4px; padding: 0 4px; }
+  .bubble .empty { color: var(--dim); font-size: 14px; }
   .action { margin-top: 10px; color: var(--dim); }
   .action b { color: var(--fuse); }
+
+  /* hand of word cards */
+  .hand { display: flex; flex-wrap: wrap; gap: 8px; }
+  .card { padding: 10px 12px; min-width: 92px; text-align: center; border-radius: 8px; border: 1px solid var(--line); background: #110f18; font: 16px var(--display); color: var(--ink); position: relative; }
+  .card .risk { display: block; font: 10px var(--mono); color: var(--dim); margin-top: 2px; letter-spacing: 1px; }
+  .card.hot .risk { color: var(--fuse); }
+  .card.boom { border-color: var(--hot); color: var(--hot); background: #2a0f15; }
+  .card.ch { border-color: var(--mine); color: var(--mine); text-decoration: line-through; }
+  .card.played { opacity: .35; }
 
   .words { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--dim); }
@@ -59,7 +71,6 @@
   .stat .v { font: 20px var(--display); }
   .stat.b .v { color: var(--safe); } .stat.m .v { color: var(--mine); }
 
-  .window { text-align: center; font: 15px var(--display); color: var(--mine); padding: 10px; border: 1px dashed var(--mine); border-radius: 8px; margin-bottom: 12px; display: none; }
   .mines { display: flex; flex-direction: column; gap: 6px; max-height: 290px; overflow: auto; }
   .mine { display: flex; justify-content: space-between; padding: 6px 10px; background: #120f19; border-radius: 6px; border-left: 3px solid var(--mine); font-size: 12px; }
   .mine.fired { border-left-color: var(--hot); background: #2a0f15; }
@@ -83,12 +94,12 @@
   input, button { font: inherit; background: #0f0d15; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
   button { background: var(--mine); color: #120c25; font-weight: 600; cursor: pointer; border: 0; }
   .end { grid-column: 1/-1; text-align: center; font: 34px var(--display); padding: 18px; display: none; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } .board { flex-wrap: wrap; } .tile { min-width: 30%; } }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } .board { flex-wrap: wrap; } .tile { min-width: 30%; } }
 </style>
 </head>
 <body>
 <header>
-  <div class="logo">WORD<b>TRAP</b></div><span class="live">LIVE</span>
+  <div class="logo">WORD<b>TRAP</b></div><span class="live" id="live">LIVE</span>
   <span class="meta" id="meta">connecting…</span>
 </header>
 
@@ -96,35 +107,40 @@
   <section class="panel">
     <div class="label">Fuse</div>
     <div class="fuse"><div class="rope" id="rope"></div><div class="spark" id="spark"></div></div>
-    <div class="fuse-row"><span class="fuse-sec" id="fuseSec">--</span><span class="label" style="margin:0">seconds until Byte goes boom</span></div>
+    <div class="fuse-row"><span class="fuse-sec" id="fuseSec">--</span><span class="label" style="margin:0">fuse left · every move burns some</span></div>
 
     <div class="board" id="board"></div>
-    <div class="prompt" id="prompt">Waiting for match…</div>
-    <div class="bubble" id="bubble"></div>
+    <div class="prompt" id="prompt">Waiting for a run…</div>
+    <div class="need" id="need"></div>
+    <div class="bubble" id="bubble"><span class="empty">Byte hasn't played a card on this tile yet.</span></div>
     <div class="action" id="action"></div>
 
-    <div class="label" style="margin-top:18px">Words Byte has said (on-chain)</div>
+    <div class="label" style="margin-top:18px">BYTE'S HAND · the cards it can play · mine any of them</div>
+    <div class="hand" id="hand"></div>
+
+    <div class="label" style="margin-top:18px">Words Byte has played (on-chain)</div>
     <div class="words" id="words"></div>
   </section>
 
   <aside>
     <div class="panel">
-      <div class="window" id="window">MINES ARMING · <span id="windowSec"></span>s</div>
       <div class="stats">
         <div class="stat b"><div class="label">Backer pool</div><div class="v" id="pool">$0</div></div>
         <div class="stat m"><div class="label">Mines staked</div><div class="v" id="staked">$0</div></div>
         <div class="stat"><div class="label">Mines fired</div><div class="v" id="firedN">0</div></div>
         <div class="stat"><div class="label">x402 hints</div><div class="v" id="hints">0</div></div>
       </div>
+      <div class="label" style="margin-top:12px">Score</div>
+      <div class="stat"><div class="v" id="score">0</div></div>
     </div>
     <div class="panel" style="margin-top:14px">
-      <div class="label">Hidden mines (sha256 commitments)</div>
+      <div class="label">Hidden mines (sha256 commitments) · arm on Byte's next turn</div>
       <div class="mines" id="mines"></div>
       <details>
         <summary>Plant a mine (demo — mobile app does this with MWA)</summary>
         <div class="plant">
           <input id="pName" placeholder="your handle" value="you" />
-          <input id="pWord" placeholder="word Byte will say…" />
+          <input id="pWord" placeholder="a card from Byte's hand…" />
           <input id="pStake" type="number" step="0.05" min="0.05" value="0.25" />
           <button id="pBtn">Arm mine</button>
           <div id="pMsg" class="label" style="text-transform:none"></div>
@@ -140,11 +156,16 @@
 <div class="boom-overlay" id="boom"><div id="boomText"></div></div>
 
 <script type="module">
+// Spectator page for one run. Polls GET /runs/:id/spectate on a plain interval — it must keep
+// working inside the app.bytearena.fun iframe (no login, no audio, never gated on document.hidden).
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => "$" + Number(n || 0).toFixed(2);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const enc = new TextEncoder();
-let state = null, windowTimer = null, fired = new Set();
-const mySecrets = new Map(); // trapId -> {word, salt, setter}
+const POLL_MS = 1200;
+let runId = (location.pathname.match(/^\/watch\/([^/]+)/) || [])[1] || null;
+let state = null, lastSeq = 0, fired = new Set();
+const mySecrets = new Map(); // trapId -> {word, salt, setter, armedTurn}
 
 // ---- crypto: identical to packages/shared + the Rust program ----
 const sha = async (...parts) => {
@@ -158,35 +179,54 @@ const mockKey = (name) => sha(enc.encode("mockkey:" + name));
 function render() {
   if (!state) return;
   const s = state;
-  $("meta").textContent = `match ${s.matchId} · turn ${s.turn} · ${s.status}`;
-  const pct = Math.max(0, s.fuseMs / s.fuseTotalMs) * 100;
+  $("meta").textContent = `run ${s.matchId}${s.callsign ? " · " + s.callsign : ""} · turn ${s.turn} · ${s.status}`;
+  $("live").className = "live" + (s.status === "live" ? "" : " off");
+  $("live").textContent = s.status === "live" ? "LIVE" : "OVER";
+  const pct = Math.max(0, s.fuse / s.fuseTotal) * 100;
   $("rope").style.width = pct + "%";
   $("spark").style.left = pct + "%";
-  const sec = Math.ceil(s.fuseMs / 1000);
-  $("fuseSec").textContent = sec;
-  $("fuseSec").className = "fuse-sec" + (sec <= 30 ? " low" : "");
+  $("fuseSec").textContent = s.fuse;
+  $("fuseSec").className = "fuse-sec" + (s.fuse <= 30 ? " low" : "");
 
   $("board").innerHTML = s.tiles.map((t, i) =>
-    `<div class="tile ${t.cleared ? "cleared" : ""} ${i === s.position ? "here" : ""}">${i + 1}. ${t.prompt}</div>`).join("") +
+    `<div class="tile ${t.cleared ? "cleared" : ""} ${i === s.position ? "here" : ""}">${i + 1}. ${esc(t.prompt)}</div>`).join("") +
     `<div class="tile exit ${s.position >= s.tiles.length ? "here" : ""}">EXIT</div>`;
-  $("prompt").textContent = s.tiles[s.position]?.prompt ?? "EXIT REACHED";
+  const tile = s.tiles[s.position];
+  $("prompt").textContent = tile?.prompt ?? "EXIT REACHED";
+  $("need").textContent = tile ? `needs ${tile.needed} card${tile.needed === 1 ? "" : "s"} · ${tile.played.length} played` : "";
 
   const boomWords = new Set(s.traps.filter((t) => t.word).map((t) => t.word));
+  for (const w of boomWords) fired.add(w);
   const ch = new Set(s.challenged.map((c) => c.word));
+
+  // speech bubble = the cards played on this tile (no narration: Byte talks on its own stream)
+  $("bubble").innerHTML = tile && tile.played.length
+    ? tile.played.map((w) => `<span class="w ${fired.has(w) ? "boom" : ""}">${esc(w)}</span>`).join("")
+    : `<span class="empty">${tile ? "Byte hasn't played a card on this tile yet." : "Byte made it out."}</span>`;
+
+  $("hand").innerHTML = s.hand.map((w) => {
+    const r = s.hint?.[w];
+    const cls = fired.has(w) ? " boom" : ch.has(w) ? " ch" : (r ?? 0) >= 0.6 ? " hot" : "";
+    return `<div class="card${cls}">${esc(w)}<span class="risk">${r === undefined ? "&nbsp;" : "risk " + Math.round(r * 100) + "%"}</span></div>`;
+  }).join("") || `<span class="empty" style="color:var(--dim)">no cards</span>`;
+
   const uniq = [...new Map(s.spoken.map((w) => [w.word, w])).keys()];
-  $("words").innerHTML = uniq.slice(-80).map((w) => `<span class="chip ${boomWords.has(w) ? "boom" : ""}">${w}</span>`).join("") +
-    [...ch].map((w) => `<span class="chip ch" title="challenged">${w}</span>`).join("");
+  $("words").innerHTML = uniq.slice(-80).map((w) => `<span class="chip ${fired.has(w) ? "boom" : ""}">${esc(w)}</span>`).join("") +
+    [...ch].map((w) => `<span class="chip ch" title="challenged">${esc(w)}</span>`).join("");
 
   $("pool").textContent = fmt(s.backerTotal);
   $("staked").textContent = fmt(s.trapTotal);
   $("firedN").textContent = s.traps.filter((t) => t.status === "fired").length;
   $("hints").textContent = `${s.hintsBought}`;
+  $("score").textContent = s.score;
   $("mines").innerHTML = [...s.traps].reverse().map((t) =>
-    `<div class="mine ${t.status}"><span class="hash">${t.word ? "💥 " + t.word.toUpperCase() : "▒▒▒▒▒▒ " + t.id.slice(0, 6)}</span><span>${fmt(t.stake)} · T${t.armedTurn}${mySecrets.has(t.id) ? " · yours" : ""}</span></div>`).join("");
+    `<div class="mine ${t.status}"><span class="hash">${t.word ? "💥 " + esc(t.word.toUpperCase()) : "▒▒▒▒▒▒ " + esc(t.id.slice(0, 6))}</span><span>${fmt(t.stake)} · T${t.armedTurn}${mySecrets.has(t.id) ? " · yours" : ""}</span></div>`).join("");
 
-  if (s.status === "ended") {
+  if (s.status !== "live") {
     $("end").style.display = "block";
-    $("end").innerHTML = s.byteSurvived ? `<span style="color:var(--safe)">BYTE ESCAPED</span> — backers sweep the unfired mines` : `<span style="color:var(--hot)">BYTE DETONATED</span> — mine setters cash out`;
+    $("end").innerHTML = s.status === "escaped"
+      ? `<span style="color:var(--safe)">BYTE ESCAPED</span> — score ${s.score} · backers sweep the unfired mines`
+      : `<span style="color:var(--hot)">BYTE DETONATED</span> — score ${s.score} · mine setters cash out`;
   } else $("end").style.display = "none";
   autoReveal();
 }
@@ -198,50 +238,31 @@ function tick(text, cls = "") {
   while ($("ticker").children.length > 8) $("ticker").lastChild.remove();
 }
 
-let speechId = 0;
-function speak(text) {
-  const b = $("bubble"); b.innerHTML = ""; const id = ++speechId;
-  text.split(/\s+/).forEach((raw, i) => setTimeout(() => {
-    if (id !== speechId) return; // a newer line started — drop stale words
-    const span = document.createElement("span");
-    span.className = "w" + (fired.has(raw.toLowerCase().replace(/[^a-z]/g, "")) ? " boom" : "");
-    span.textContent = raw; b.appendChild(span);
-  }, i * 70));
-}
-
 function boom(word, who, payout) {
-  $("boomText").innerHTML = `BOOM<small>“${word.toUpperCase()}” · ${who} +${fmt(payout)}</small>`;
+  $("boomText").innerHTML = `BOOM<small>“${esc(word.toUpperCase())}” · ${esc(who)} +${fmt(payout)}</small>`;
   const o = $("boom"); o.classList.remove("on"); void o.offsetWidth; o.classList.add("on");
   document.body.classList.remove("shake"); void document.body.offsetWidth; document.body.classList.add("shake");
 }
 
 function onEvent(e) {
   switch (e.type) {
-    case "state": state = e.state; render(); break;
-    case "narration": speak(e.text); break;
-    case "action": $("action").innerHTML = `<b>${e.action}</b> · ${e.detail}`; tick(`T${e.turn} ${e.action} — ${e.detail}`); break;
+    case "action": $("action").innerHTML = `<b>${esc(e.action)}</b> · ${esc(e.detail)}`; tick(`T${e.turn} ${e.action} — ${e.detail}`); break;
     case "hint": tick(`Byte paid $${e.costUsd} via x402 for risk scores: ${Object.entries(e.scores).map(([w, s]) => `${w} ${Math.round(s * 100)}%`).join(", ")}`, "hint"); break;
     case "trap_planted": tick(`mine armed · ${fmt(e.trap.stake)} · live from turn ${e.trap.armedTurn}`); break;
-    case "trap_fired": fired.add(e.trap.word); boom(e.trap.word, e.trap.setter || "anon", e.payout); tick(`💥 ${e.trap.word.toUpperCase()} detonated · −${e.fuseBurnMs / 1000}s fuse · paid ${fmt(e.payout)}`, "fire"); break;
-    case "turn_window": {
-      clearInterval(windowTimer);
-      let left = Math.ceil(e.closesInMs / 1000);
-      $("window").style.display = "block"; $("windowSec").textContent = left;
-      windowTimer = setInterval(() => { left--; $("windowSec").textContent = left; if (left <= 0) { clearInterval(windowTimer); $("window").style.display = "none"; } }, 1000);
-      break;
-    }
-    case "match_end": tick(`MATCH OVER — ${e.reason}`); fired = new Set(); break;
+    case "trap_fired": fired.add(e.trap.word); boom(e.trap.word, e.trap.setter || "anon", e.payout); tick(`💥 ${e.trap.word.toUpperCase()} detonated · −${e.fuseBurn} fuse · paid ${fmt(e.payout)}`, "fire"); break;
+    case "match_end": tick(`RUN OVER — ${e.reason}`); break;
   }
 }
 
-// ---- demo planter: commit in-browser, keep salt locally, auto-reveal when Byte says it ----
+// ---- demo planter: commit in-browser, keep salt locally, auto-reveal when Byte plays it ----
 $("pBtn").onclick = async () => {
+  if (!runId) return ($("pMsg").textContent = "no live run yet");
   const setter = $("pName").value.trim() || "you";
   const word = $("pWord").value.toLowerCase().replace(/[^a-z]/g, "");
   if (word.length < 3) return ($("pMsg").textContent = "word must be 3+ letters a–z");
   const salt = crypto.getRandomValues(new Uint8Array(32));
   const c = hex(await sha(enc.encode("wordtrap:v1"), enc.encode(word), salt, await mockKey(setter)));
-  const r = await fetch("/api/plant", { method: "POST", body: JSON.stringify({ commitmentHex: c, stake: Number($("pStake").value), setter }) }).then((r) => r.json());
+  const r = await fetch(`/runs/${runId}/plant`, { method: "POST", body: JSON.stringify({ commitmentHex: c, stake: Number($("pStake").value), setter }) }).then((r) => r.json());
   if (r.error) return ($("pMsg").textContent = r.error);
   mySecrets.set(r.id, { word, salt: hex(salt), setter, armedTurn: r.armedTurn });
   $("pMsg").textContent = `armed: only your browser knows it's “${word}”. Live from turn ${r.armedTurn}.`;
@@ -250,17 +271,29 @@ $("pBtn").onclick = async () => {
 async function autoReveal() {
   for (const [id, s] of mySecrets) {
     if (!state.spoken.some((w) => w.word === s.word && w.turn >= s.armedTurn)) continue;
-    const r = await fetch("/api/reveal", { method: "POST", body: JSON.stringify({ trapId: id, word: s.word, saltHex: s.salt, setter: s.setter }) }).then((r) => r.json());
+    const r = await fetch(`/runs/${runId}/reveal`, { method: "POST", body: JSON.stringify({ trapId: id, word: s.word, saltHex: s.salt, setter: s.setter }) }).then((r) => r.json());
     if (!r.error) { mySecrets.delete(id); $("pMsg").textContent = `YOUR MINE FIRED: +${fmt(r.payout)}`; }
   }
 }
 
-function connect() {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  ws.onmessage = (m) => onEvent(JSON.parse(m.data));
-  ws.onclose = () => { $("meta").textContent = "reconnecting…"; setTimeout(connect, 1500); };
+// ---- polling: no websocket, no visibility checks, works inside the Byte Arena iframe ----
+async function poll() {
+  try {
+    if (!runId) {
+      const cur = await fetch("/api/v1/current").then((r) => r.json());
+      if (!cur.runId) { $("meta").textContent = "waiting for a run to start…"; return; }
+      runId = cur.runId;
+    }
+    const r = await fetch(`/runs/${runId}/spectate?after=${lastSeq}`);
+    if (!r.ok) { $("meta").textContent = `run ${runId}: ${r.status}`; return; }
+    const { seq, events, state: s } = await r.json();
+    for (const e of events) onEvent(e);
+    lastSeq = seq; state = s;
+    render();
+  } catch (e) { $("meta").textContent = "reconnecting…"; }
 }
-connect();
+poll();
+setInterval(poll, POLL_MS);
 </script>
 </body>
 </html>

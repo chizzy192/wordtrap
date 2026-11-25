@@ -2,12 +2,23 @@
   "name": "wordtrap",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/server"],
+  "workspaces": [
+    "packages/*",
+    "apps/server"
+  ],
   "scripts": {
-    "test": "node --test \"packages/shared/test/*.test.ts\" \"apps/server/test/*.test.ts\"",
     "dev": "node apps/server/src/main.ts",
-    "sim": "SIM=1 node apps/server/src/main.ts",
-    "program:test": "cargo test -p wordtrap"
+    "sim": "cross-env SIM=1 node apps/server/src/main.ts",
+    "sim:fast": "cross-env SIM=1 FAST=1 node apps/server/src/main.ts",
+    "sim:once": "cross-env SIM=1 FAST=1 ONE_MATCH=1 node apps/server/src/main.ts",
+    "trace": "node scripts/trace.ts 30",
+    "program:test": "cargo test -p wordtrap",
+    "test": "node --test \"packages/shared/test/*.test.ts\" \"apps/server/test/*.test.ts\""
   },
-  "engines": { "node": ">=22.18" }
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0"
+  }
 }

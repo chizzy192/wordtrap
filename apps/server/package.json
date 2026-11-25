@@ -4,13 +4,12 @@
   "type": "module",
   "scripts": {
     "dev": "node src/main.ts",
-    "sim": "SIM=1 node src/main.ts",
+    "sim": "cross-env SIM=1 node src/main.ts",
     "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
     "@wordtrap/shared": "*",
-    "@noble/hashes": "^2.0.0",
-    "ws": "^8.18.0"
+    "@noble/hashes": "^2.0.0"
   },
   "optionalDependencies": {
     "@coral-xyz/anchor": "^0.32.1",

@@ -1,59 +1,151 @@
-# Architecture
+# Architecture (Byte Arena pivot)
+
+**The one-line change:** Byte is no longer our agent. Byte is an external AI streamer run by
+bytearena.fun. We publish a turn-based game API; their agent calls it over HTTPS, narrates on
+their own stream, and we supply only the game, the on-chain mines, and a spectator page.
+Our old in-process agent survives as `driver.ts`, a local stand-in used for sims and rehearsal.
 
 ```mermaid
 flowchart LR
+  subgraph ByteArena["Byte Arena (bytearena.fun)"]
+    B[Byte agent] -->|"POST /api/v1/runs (start)<br/>GET .../state<br/>POST .../play · hint · challenge · defuse · pass"| S
+    F[Stream iframe] -->|GET /watch/:runId| S
+  end
   subgraph Viewers
     M[TrapSetter APK<br/>RN + MWA] -->|plant_trap combo<br/>1 wallet signature| P
     M -->|reveal_trap<br/>device revealer key| P
-    W[watchUrl page] -.ws.-> S
+    M -.polls /spectate.-> S
+    W[watch page<br/>polls /spectate every 1.2 s] -.-> S
   end
-  subgraph Server
-    S[Game engine] --> A[Byte agent<br/>LLM / scripted]
-    A -->|BUY_HINT| O[x402 Risk Oracle]
-    A -.pays USDC.-> SW[Swig wallet<br/>agent role, spend limit]
+  subgraph Server["Server (apps/server)"]
+    S[runs.ts RunManager<br/>match.ts Match per run] -->|record_words / advance_turn / end_match| P
+    S -->|buy_hint pays $0.001 x402| O[Risk oracle<br/>/oracle/risk]
+    S -.pays USDC.-> SW[Swig wallet<br/>agent role, spend limit]
     SW --> O
-    S -->|record_word / advance_turn / end_match| P
+    D[driver.ts<br/>local Byte stand-in<br/>SIM=1 only] -->|same public HTTP API| S
   end
   P[(wordtrap Anchor program<br/>Game · Trap · WordLog · Backer · USDC vault)]
   P -.TrapFired events.-> S
 ```
 
-## On-chain (programs/wordtrap)
+## Platform contract we must satisfy (app.bytearena.fun/api/game-spec)
+
+The spec file is `byte.game.json` at the repo root. The rules that shaped the design:
+
+| Rule | What it forces on us |
+|---|---|
+| Every response carries the complete game state | `act()` and `/state` both return the full `BoardState`; no deltas |
+| Moves come from a closed, enumerable set; no reaction-time dependence | **No wall-clock fuse.** Fuse burns per action. Each action advances the turn by exactly 1 |
+| `GET state` has zero side effects | `/state` reads the `Match` without touching turn, fuse, timers or chain |
+| Repeated actions must be idempotent or reject stale turns legibly | Optional `turn` in the body; mismatch → 409 `{ error, state }`. Finished runs return final state unchanged |
+| Byte cannot invent undeclared params | `play_word.word` must be in `state.hand`; anything else → 400 `{ error, state }` |
+| Finished runs must keep answering | Runs stay in memory for the session; no 404 after finish |
+| Bets decided from state JSON, not narration | Mines detonate only on words Byte **plays as moves**. We never see narration |
+| `watchUrl` must be frameable | `/watch/:id` served as `text/html` with a real `Content-Security-Policy: frame-ancestors 'self' https://app.bytearena.fun` header; polling with plain `setInterval`, never `document.hidden` |
+| Limits: 400 calls/run, 12 s/call, 64 KB response, 2 h/run | `turn >= 60` ends the run; reveal hooks must finish inside the request; state kept small (traps are views, events capped at 200) |
+
+## Game rules after the pivot
+
+- Each tile (prompt) comes with a visible **hand of up to 10 word cards**: ~4 obvious answers,
+  ~4 sideways synonyms, up to 2 extras. Byte clears a tile by playing `needed` cards one at a time.
+- Viewers can see the hand. That is the point: obvious cards are tempting, and mined ones blow up.
+- **Fuse** is an integer, starts at 180. End states: `escaped` (all tiles cleared) or `dead`
+  (`fuse <= 0` or `turn >= 60`). `score = position * 100 + max(0, fuse)`.
+
+| Action | Fuse cost | Effect |
+|---|---|---|
+| `play_word` | 5 | Plays one card from `state.hand` onto the current tile. Recorded on-chain as `spoken`. If mined and armed → detonation |
+| `buy_hint` | 3 (+ $0.001 USDC via x402) | Scores every hand word for mine risk 0..1. Written into `state.hint` so Byte reads it next call |
+| `challenge_word` | 8 | Names a suspected mine **without playing it**. Recorded on-chain as `challenged`. If it was an armed mine, it is permanently disarmed and the card becomes safe to play |
+| `defuse_tile` | 20 | Skips the current tile. Max 2 per run (`state.defusesLeft`) |
+| `pass_turn` | 10 | Does nothing |
+| Detonation | 22 | Setter is paid stake + bounty (capped by the backer pool) |
+
+A mine planted on turn *t* arms on turn *t+1*. Because every action advances the turn by one,
+"plant now" means "live on Byte's next action", which is exactly the on-chain rule. A challenge
+disarms mines that are armed when it is recorded; one planted on the same turn still arms next
+turn (program rule, see `trapFired`).
+
+## On-chain (programs/wordtrap), unchanged
 
 | Account | Seeds | Holds |
 |---|---|---|
 | `Game` | `match, authority, match_id` | status, turn, totals, bounty budget, reveal deadline |
 | vault | `vault, game` | all USDC (backers + mine stakes) |
 | `Trap` | `trap, game, commitment` | setter, revealer, stake, armed_turn, status |
-| `WordLog` | `word, game, sha256("wordtrap:word"‖word)` | 128-bit bitmap of the turns the word was said + the turn it was first challenged |
+| `WordLog` | `word, game, sha256("wordtrap:word"‖word)` | 128-bit bitmap of the turns the word was played + the turn it was first challenged |
 | `Backer` | `backer, game, user` | deposit, claimed flag |
 
 **Commitment** = `sha256("wordtrap:v1" ‖ word ‖ salt₃₂ ‖ setter_pubkey)`. The setter's key is part of
 the hash, so nobody can copy someone else's commitment and steal the payout. The 32-byte salt
 stops anyone from guessing the word by hashing a dictionary.
 
-**When a mine fires:** Byte said the word on some turn `t ≥ armed_turn`, and if Byte challenged that
-word while the mine was active, `t` came before the challenge. One check over a bitmap, O(1). There
-is no list of words to search through.
+**When a mine fires:** Byte played the word on some turn `t >= armed_turn`, and if Byte challenged that
+word while the mine was active, `t` came before the challenge. One check over a bitmap, O(1).
 
 **Money flow**
 - `back_byte`: the deposit goes into the vault and adds to the bounty budget.
 - `plant_trap`: the stake goes into the vault.
 - `reveal_trap` (allowed live or after the match, until the deadline): pays the setter stake + min(stake × (mult−1), bounty budget).
-- `finalize`: once the reveal window closes, takes a snapshot of the vault. Everything left in it (deposits minus bounties paid, plus stakes from mines that never fired) goes to backers.
+- `finalize`: once the reveal window closes, takes a snapshot of the vault. Everything left in it goes to backers.
 - `claim_backer`: pays out pro-rata. `refund_trap` returns stakes only if nobody backed Byte.
 
-**Trust assumption (say this to judges):** the referee key records Byte's words. The referee can't
-see what any mine says, so it can't steer Byte away from them. It could leave a word out of the record, but
-every recorded word is a public event you can check against the stream. Stretch goal: have Byte's agent key co-sign each utterance.
+The hash domains (`wordtrap:v1`, `wordtrap:word`), the Rust program, `chain/mock.ts` economics
+and the shared hash vectors are frozen. If `packages/shared/test` changes, program compatibility broke.
 
-## Off-chain
+**Trust assumption (say this to judges):** the referee key records Byte's moves. The referee can't
+see what any mine says, so it can't steer Byte away from them. Every recorded word is a public
+move Byte sent over HTTP, and the spectator feed shows it.
 
-- **Engine** (`apps/server/src/engine.ts`): each turn is mine window → advance turn → Byte acts →
-  short grace period for reveals. Byte's thinking time burns real fuse, so viewers watch the clock run.
-- **Byte agent** (`agent.ts`): `LlmAgent` returns structured JSON actions. `ScriptedAgent` covers offline demos.
-  The narration counts as speech, and that is the core joke of the game.
-- **x402 oracle** (`oracle.ts`): replies 402 with an `exact` payment requirement ($0.001 devnet USDC).
-  Byte's wallet pays and retries. A facilitator (e.g. PayAI) handles verify and settle.
-  Scores come from public information only: how obvious the word is for the prompt, words that already blew up, and how much was staked this window.
-- **Feed** (`main.ts`): a WebSocket broadcasts `state / narration / action / hint / trap_planted / trap_fired`.
+## Off-chain (apps/server)
+
+| File | Role |
+|---|---|
+| `runs.ts` | `RunManager`: `start(callsign)` → `{ runId, apiKey, state }`. Holds `Map<runId, { key, match, chain, events }>`, 200 events per run, finished runs kept for the session. SIM mode attaches the crowd to each new run |
+| `match.ts` | Turn-based `Match` (EventEmitter). `start()` does `initMatch`, runs `turnHooks` once for pre-start planting, then `startMatch()` → turn 1. `act(name, params)` validates (409 `StaleTurnError`, 400 `InvalidActionError`, state untouched), records words on-chain, **awaits `afterWords` reveal hooks so a detonation lands in the same response**, re-syncs from `chain.snapshot()`, advances the turn, checks end conditions, runs `turnHooks` (sim viewers plant between Byte's calls), returns a copy of the full `BoardState`. Replaces `engine.ts` |
+| `content.ts` | Tile deck with `prompt`, `needed`, obvious answers and `sideways` synonyms. `handFor(tile, extras, seed)` deals a deterministic, deduped, mineable hand of ≤ 10 |
+| `crowd.ts` | SIM-mode viewers. After every turn each of 5 setters plants with p = 0.13 on a card from the current hand (75% of the time an obvious one), and a reveal hook detonates its own mines synchronously when played. Backers seed the pool. Aggression is the tuning knob for win rate, not fuse costs: 0.6 gave 0% wins once the hand was visible, 0.13 gives ~33% |
+| `driver.ts` | Pure `decide(state)` → `{ action, word? }`. Buys a hint when ≥ 2 traps are armed, challenges a word scored > 0.85 every 5th turn, defuses when fuse < 35, otherwise plays the lowest-risk card, and every 4th turn deliberately plays the most obvious card so it stays fallible. Replaces `agent.ts` |
+| `oracle.ts` | Unchanged. Replies 402 with an `exact` x402 requirement ($0.001 devnet USDC); the server's wallet pays and retries. Scores use public information only |
+| `main.ts` | HTTP routes below. SIM=1 plays runs **through its own public API** with `driver.decide`, which doubles as the Byte rehearsal harness |
+
+### HTTP surface
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `POST /api/v1/runs` `{ callsign }` | none | Start. Returns `{ runId, apiKey, state }`. The only unauthenticated game call |
+| `GET /api/v1/runs/:id/state` | Bearer | Full state, zero side effects |
+| `POST /api/v1/runs/:id/play` `{ word, turn? }` | Bearer | `play_word` → full state; 400 bad word, 409 stale turn |
+| `POST /api/v1/runs/:id/hint` `{}` | Bearer | `buy_hint` |
+| `POST /api/v1/runs/:id/challenge` `{ word }` | Bearer | `challenge_word` |
+| `POST /api/v1/runs/:id/defuse` `{}` | Bearer | `defuse_tile` |
+| `POST /api/v1/runs/:id/pass` `{}` | Bearer | `pass_turn` |
+| `GET /runs/:id/spectate?after=seq` | public, CORS `*` | `{ seq, events, state }` for the watch page and mobile app |
+| `GET /api/v1/current` | public | `{ runId }` of the most recent live run (second-screen mobile) |
+| `GET /watch/:id` | public | Spectator page, `text/html` + `frame-ancestors` CSP header |
+| `GET /api/v1/spec` | public | Serves `byte.game.json` |
+| `GET /oracle/risk` | x402 | Unchanged |
+| `POST /runs/:id/plant`, `/reveal`, `GET /suggest` | mock mode only | Browser demo planter |
+
+### Spectators
+
+- **Watch page** (`apps/watch/index.html`): run id from the path, polls `/spectate` every 1.2 s.
+  Shows board, fuse, mines, last played words and action detail, plus a "BYTE'S HAND" row:
+  red when a card has detonated, struck through when challenged. No websocket, no audio, no login.
+- **Mobile** (`apps/mobile/App.tsx`): polls `/api/v1/current` until a run appears, then `/spectate`
+  every 1.5 s. MWA combo arming, secure-store salts and the auto-detonate revealer stay as they were.
+  The arming-window countdown is gone; mines arm on the next turn, whenever that is.
+
+### Shared types (`packages/shared`)
+
+`BoardState` carries `status`, `turn`, `position`, `tiles[]` (with `played`), `hand`, `fuse`,
+`fuseTotal`, `hint`, `spoken`, `challenged`, `traps`, pool totals, `defusesLeft`, hint spend and
+`score`. `FeedEvent` is `state | action | hint | trap_planted | trap_fired | match_end`.
+`turn_window` and `narration` are gone. Hashing, tokenize, `trapFired` and money helpers are untouched.
+
+## Status
+
+The refactor landed on Nov 25: `engine.ts`, `agent.ts`, the websocket feed and the wall-clock fuse
+are gone. 17 TypeScript tests cover the hash vectors, the mock chain, the x402 flow, the `Match`
+rules and the full HTTP contract. The step-by-step spec that drove it is
+`docs/wordtrap-byte-pivot-prompt (1).md`; deployment work is tracked in `docs/HACKATHON_PLAN.md`.

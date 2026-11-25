@@ -1,5 +1,6 @@
-// TrapSetter — second-screen co-play. Swipe right to add a word to your mine combo,
-// left to skip; one MWA signature arms the combo before Byte's turn resolves.
+// TrapSetter — second-screen co-play. Swipe right to add a card from Byte's hand to your mine
+// combo, left to skip; one MWA signature arms the combo. Mines arm on Byte's next turn.
+// Polls the server (no websocket): /api/v1/current until a run exists, then /runs/:id/spectate.
 import { useEffect, useRef, useState } from "react";
 import { Animated, PanResponder, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from "react-native";
 import Constants from "expo-constants";
@@ -7,41 +8,50 @@ import { PublicKey } from "@solana/web3.js";
 import { armCombo, detonate, loadSecrets } from "./src/chain";
 
 const SERVER = (Constants.expoConfig!.extra as any).serverUrl as string;
+const POLL_MS = 1500;
 const C = { bg: "#0b0a10", panel: "#15131d", line: "#2a2636", ink: "#ece8f4", dim: "#8c86a0", fuse: "#ffb020", hot: "#ff3b4e", mine: "#9b7bff", safe: "#3ce0a0" };
 
 export default function App() {
+  const [runId, setRunId] = useState<string | null>(null);
   const [state, setState] = useState<any>(null);
   const [deck, setDeck] = useState<string[]>([]);
   const [combo, setCombo] = useState<string[]>([]);
   const [stake, setStake] = useState(0.25);
-  const [windowLeft, setWindowLeft] = useState(0);
   const [toast, setToast] = useState("");
   const [custom, setCustom] = useState("");
+  const seq = useRef(0);
+  const dealtFor = useRef<string>("");
   const gameKey = state?.matchPda ? new PublicKey(state.matchPda) : null;
 
-  // live feed
+  // live feed: poll for the current run, then poll its spectator feed
   useEffect(() => {
-    let ws: WebSocket; let alive = true;
-    const open = () => {
-      ws = new WebSocket(SERVER.replace(/^http/, "ws") + "/ws");
-      ws.onmessage = async (m) => {
-        const e = JSON.parse(m.data as string);
-        if (e.type === "state") { setState(e.state); autoDetonate(e.state); }
-        if (e.type === "turn_window") { setWindowLeft(Math.ceil(e.closesInMs / 1000)); refreshDeck(); }
-        if (e.type === "trap_fired") setToast(`💥 ${e.trap.word.toUpperCase()} paid $${e.payout.toFixed(2)}`);
-      };
-      ws.onclose = () => alive && setTimeout(open, 1500);
+    let alive = true;
+    let id: string | null = runId;
+    const tick = async () => {
+      try {
+        if (!id) {
+          const cur = await fetch(`${SERVER}/api/v1/current`).then((r) => r.json());
+          if (!cur.runId) return;
+          id = cur.runId; seq.current = 0; setRunId(id);
+        }
+        const r = await fetch(`${SERVER}/runs/${id}/spectate?after=${seq.current}`);
+        if (!r.ok) { if (r.status === 404) { id = null; setRunId(null); } return; }
+        const { seq: s, events, state: st } = await r.json();
+        if (!alive) return;
+        seq.current = s;
+        for (const e of events) if (e.type === "trap_fired") setToast(`💥 ${e.trap.word.toUpperCase()} paid $${e.payout.toFixed(2)}`);
+        setState(st);
+        autoDetonate(st);
+        // a fresh swipe deck whenever Byte moves to a new tile (the hand is public)
+        const key = `${st.matchId}:${st.position}`;
+        if (dealtFor.current !== key) { dealtFor.current = key; setDeck(st.hand); }
+        if (st.status !== "live") { id = null; setRunId(null); }   // next run picks up automatically
+      } catch { /* offline — retry on the next tick */ }
     };
-    open();
-    return () => { alive = false; ws?.close(); };
+    tick();
+    const t = setInterval(tick, POLL_MS);
+    return () => { alive = false; clearInterval(t); };
   }, []);
-
-  useEffect(() => { if (windowLeft <= 0) return; const t = setTimeout(() => setWindowLeft(windowLeft - 1), 1000); return () => clearTimeout(t); }, [windowLeft]);
-
-  async function refreshDeck() {
-    const r = await fetch(`${SERVER}/suggest`).then((r) => r.json()).catch(() => ({ words: [] }));
-    setDeck(r.words);
-  }
 
   async function autoDetonate(s: any) {
     if (!s?.matchPda) return;
@@ -56,7 +66,7 @@ export default function App() {
     if (!gameKey || !combo.length) return;
     try {
       await armCombo(gameKey, combo, stake);
-      setToast(`Armed ${combo.length} mine${combo.length > 1 ? "s" : ""} · $${(stake * combo.length).toFixed(2)}`);
+      setToast(`Armed ${combo.length} mine${combo.length > 1 ? "s" : ""} · $${(stake * combo.length).toFixed(2)} · live on Byte's next turn`);
       setCombo([]);
     } catch (e: any) { setToast(e.message ?? "wallet rejected"); }
   }
@@ -69,20 +79,21 @@ export default function App() {
   };
 
   const tile = state?.tiles?.[state.position];
-  const fuse = state ? Math.ceil(state.fuseMs / 1000) : 0;
+  const fuse = state?.fuse ?? 0;
+  const live = state?.status === "live";
 
   return (
     <SafeAreaView style={s.root}>
       <View style={s.head}>
         <Text style={s.logo}>WORD<Text style={{ color: C.hot }}>TRAP</Text></Text>
-        <Text style={[s.fuse, fuse <= 30 && { color: C.hot }]}>{fuse}s</Text>
+        <Text style={[s.fuse, fuse <= 30 && { color: C.hot }]}>{fuse}</Text>
       </View>
-      <Text style={s.prompt}>{tile?.prompt ?? "waiting for match…"}</Text>
-      <Text style={[s.window, { opacity: windowLeft > 0 ? 1 : 0.35 }]}>
-        {windowLeft > 0 ? `MINES ARMING · ${windowLeft}s` : "Byte is speaking…"}
+      <Text style={s.prompt}>{tile?.prompt ?? (runId ? "run over — waiting for the next one…" : "waiting for a run…")}</Text>
+      <Text style={s.window}>
+        {live ? `TURN ${state.turn} · ${tile?.played?.length ?? 0}/${tile?.needed ?? 0} cards played · mines arm next turn` : "Byte is not playing right now"}
       </Text>
 
-      <View style={s.deck}>{top ? <SwipeCard key={top} word={top} onSwipe={swipe} /> : <Text style={s.dim}>No cards — type your own below</Text>}</View>
+      <View style={s.deck}>{top ? <SwipeCard key={top} word={top} onSwipe={swipe} /> : <Text style={s.dim}>No cards left — type your own below</Text>}</View>
 
       <View style={s.row}>
         <TextInput style={s.input} value={custom} onChangeText={setCustom} placeholder="custom word" placeholderTextColor={C.dim} autoCapitalize="none" />
@@ -97,7 +108,7 @@ export default function App() {
             <Pressable key={v} onPress={() => setStake(v)} style={[s.stake, stake === v && { borderColor: C.mine }]}><Text style={s.stakeT}>${v}</Text></Pressable>
           ))}
         </View>
-        <Pressable style={[s.arm, (!combo.length || windowLeft <= 0) && { opacity: 0.4 }]} onPress={arm}>
+        <Pressable style={[s.arm, (!combo.length || !live) && { opacity: 0.4 }]} onPress={arm}>
           <Text style={s.armT}>ARM {combo.length || ""} MINE{combo.length === 1 ? "" : "S"} · ${(stake * combo.length).toFixed(2)}</Text>
         </Pressable>
       </View>

@@ -1,0 +1,60 @@
+{
+  "api": {
+    "baseUrl": "https://REPLACE-WITH-DEPLOYED-HOST",
+    "start": {
+      "method": "POST",
+      "path": "/api/v1/runs",
+      "body": { "callsign": "{{callsign}}" },
+      "save": { "apiKey": "apiKey", "runId": "runId" }
+    },
+    "auth": { "header": "Authorization", "value": "Bearer {{apiKey}}" },
+    "state": { "method": "GET", "path": "/api/v1/runs/{{runId}}/state" },
+    "actions": [
+      {
+        "name": "play_word",
+        "description": "Play one word card from state.hand onto the current tile. Clearing a tile needs state.tiles[position].needed words. If the word is secretly mined and the mine is armed, it detonates: -22 fuse and the trapper gets paid. Costs 5 fuse.",
+        "method": "POST",
+        "path": "/api/v1/runs/{{runId}}/play",
+        "body": { "word": "{{word}}" },
+        "params": { "word": { "type": "string", "required": true } },
+        "decision": true
+      },
+      {
+        "name": "buy_hint",
+        "description": "Pay $0.001 USDC via x402 to score every word in state.hand for mine risk (0..1). Scores appear in state.hint. Costs 3 fuse.",
+        "method": "POST",
+        "path": "/api/v1/runs/{{runId}}/hint",
+        "body": {}
+      },
+      {
+        "name": "challenge_word",
+        "description": "Type (not play) one word you suspect is mined. If it IS mined and armed, that mine is permanently disarmed and the word becomes safe to play. Costs 8 fuse.",
+        "method": "POST",
+        "path": "/api/v1/runs/{{runId}}/challenge",
+        "body": { "word": "{{word}}" },
+        "params": { "word": { "type": "string", "required": true } },
+        "decision": true
+      },
+      {
+        "name": "defuse_tile",
+        "description": "Skip the current tile without playing any word. Costs 20 fuse. Only state.defusesLeft uses remain.",
+        "method": "POST",
+        "path": "/api/v1/runs/{{runId}}/defuse",
+        "body": {}
+      },
+      {
+        "name": "pass_turn",
+        "description": "Do nothing. Costs 10 fuse.",
+        "method": "POST",
+        "path": "/api/v1/runs/{{runId}}/pass",
+        "body": {}
+      }
+    ],
+    "finish": { "path": "status", "equals": ["escaped", "dead"] },
+    "result": {
+      "win": { "path": "status", "equals": ["escaped"] },
+      "score": { "path": "score", "label": "FUSE SCORE" }
+    },
+    "watchUrl": "https://REPLACE-WITH-DEPLOYED-HOST/watch/{{runId}}"
+  }
+}

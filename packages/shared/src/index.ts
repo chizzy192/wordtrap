@@ -8,8 +8,9 @@ const enc = new TextEncoder();
 const COMMIT_DOMAIN = enc.encode("wordtrap:v1");
 const WORD_DOMAIN = enc.encode("wordtrap:word");
 
-export type ActionType = "PLAY_WORD_CARD" | "BUY_HINT" | "DEFUSE_TILE" | "CHALLENGE_TRAP" | "PASS_TURN";
-export const ACTIONS: ActionType[] = ["PLAY_WORD_CARD", "BUY_HINT", "DEFUSE_TILE", "CHALLENGE_TRAP", "PASS_TURN"];
+/** The closed set of moves Byte can make (mirrors byte.game.json api.actions[].name). */
+export type ActionType = "play_word" | "buy_hint" | "defuse_tile" | "challenge_word" | "pass_turn";
+export const ACTIONS: ActionType[] = ["play_word", "buy_hint", "defuse_tile", "challenge_word", "pass_turn"];
 
 /** Lowercase, strip everything that is not a-z. Returns "" if nothing usable. */
 export function normalizeWord(raw: string): string {
@@ -88,19 +89,26 @@ export function proRata(pool: bigint, amount: bigint, total: bigint): bigint {
   return total === 0n ? 0n : (pool * amount) / total;
 }
 
-// ---------- live feed types (server -> watch page / mobile) ----------
+// ---------- game state types (server -> Byte / watch page / mobile) ----------
+// Turn-based: there are no wall-clock windows. Every action advances the turn by exactly 1 and
+// burns an integer amount of fuse. Every API response carries a complete BoardState.
 
 export interface TrapView { id: string; setter: string; stake: number; armedTurn: number; status: "armed" | "fired" | "refunded"; word?: string }
+
+export type MatchStatus = "live" | "dead" | "escaped";
 
 export interface BoardState {
   matchId: string;
   matchPda?: string;         // on-chain Game account (solana mode)
-  status: "open" | "live" | "ended" | "finalized";
+  callsign?: string;         // Byte's callsign for this run
+  status: MatchStatus;
   turn: number;
   position: number;          // tile index Byte stands on
-  tiles: { prompt: string; cleared: boolean }[];
-  fuseMs: number;            // remaining fuse
-  fuseTotalMs: number;
+  tiles: { prompt: string; cleared: boolean; needed: number; played: string[] }[];
+  hand: string[];            // word cards Byte may play on the current tile
+  fuse: number;              // remaining fuse units
+  fuseTotal: number;
+  hint: Record<string, number> | null; // word -> mine risk 0..1, from the last buy_hint
   spoken: { word: string; turn: number }[];
   challenged: { word: string; turn: number }[];
   traps: TrapView[];
@@ -109,15 +117,13 @@ export interface BoardState {
   defusesLeft: number;
   hintsBought: number;
   hintSpendUsd: number;
-  byteSurvived?: boolean;
+  score: number;             // position * 100 + max(0, fuse)
 }
 
 export type FeedEvent =
   | { type: "state"; state: BoardState }
-  | { type: "narration"; text: string; turn: number }
-  | { type: "action"; action: ActionType; detail: string; turn: number }
+  | { type: "action"; action: string; detail: string; turn: number }
   | { type: "hint"; scores: Record<string, number>; costUsd: number; txSig: string }
   | { type: "trap_planted"; trap: TrapView }
-  | { type: "trap_fired"; trap: TrapView; payout: number; fuseBurnMs: number }
-  | { type: "turn_window"; turn: number; closesInMs: number }
-  | { type: "match_end"; byteSurvived: boolean; reason: string };
+  | { type: "trap_fired"; trap: TrapView; payout: number; fuseBurn: number }
+  | { type: "match_end"; status: MatchStatus; reason: string };
