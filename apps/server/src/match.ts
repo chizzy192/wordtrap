@@ -177,7 +177,7 @@ export class Match extends EventEmitter {
         this.burn(this.cfg.challengeCost);
         await this.chain.recordWords([w], "challenged");
         this.state.challenged.push({ word: w, turn });
-        return `challenged "${w}" without playing it · any mine on it is now disarmed`;
+        return `challenged "${w}" without playing it · disarms mines already armed on it; later mines can still arm`;
       }
       case "pass_turn":
         this.burn(this.cfg.passCost);
