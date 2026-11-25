@@ -1,6 +1,6 @@
 {
   "api": {
-    "baseUrl": "https://REPLACE-WITH-DEPLOYED-HOST",
+    "baseUrl": "https://wordtrap.onrender.com/",
     "start": {
       "method": "POST",
       "path": "/api/v1/runs",
@@ -55,6 +55,6 @@
       "win": { "path": "status", "equals": ["escaped"] },
       "score": { "path": "score", "label": "FUSE SCORE" }
     },
-    "watchUrl": "https://REPLACE-WITH-DEPLOYED-HOST/watch/{{runId}}"
+      "watchUrl": "https://wordtrap.onrender.com/watch/{{runId}}"
   }
 }
