@@ -28,7 +28,7 @@
       },
       {
         "name": "challenge_word",
-        "description": "Type (not play) one word you suspect is mined. If it IS mined and armed, that mine is permanently disarmed and the word becomes safe to play. Costs 8 fuse.",
+        "description": "Type (not play) one word you suspect is mined. Disarms any mine already armed on that word. A mine planted after your challenge can still arm on a later turn - a challenged word is safer, never guaranteed. Costs 8 fuse.",
         "method": "POST",
         "path": "/api/v1/runs/{{runId}}/challenge",
         "body": { "word": "{{word}}" },
