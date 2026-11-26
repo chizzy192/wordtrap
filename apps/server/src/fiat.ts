@@ -11,10 +11,12 @@ import { randomBytes } from "node:crypto";
 import { proRata } from "@wordtrap/shared";
 
 export const MICRO = 1_000_000;
-export const toMicro = (usd: number): number => {
-  const m = Math.round(Number(usd) * MICRO);
-  if (!Number.isFinite(m) || m < 0) throw new FiatError(`bad amount ${usd}`, 400);
-  return m;
+/** Dollars → integer micro-USD, exactly: "0.25" → 250000. Parses the decimal text; never multiplies a float. */
+export const toMicro = (usd: number | string): number => {
+  const t = String(usd ?? "").trim();
+  const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(t);
+  if (!m) throw new FiatError(`bad amount ${t}`, 400);
+  return Number(m[1] + (m[2] ?? "").padEnd(6, "0"));
 };
 export const fromMicro = (m: number): number => m / MICRO;
 
@@ -32,12 +34,14 @@ export interface LedgerFile {
   version: 1;
   balances: Record<string, number>;                                  // user -> micro-USD
   payments: Record<string, { user: string; micro: number; status: PaymentStatus; ts: number; tries: number }>;
+  /** Last resort when Pollar gives no Solana wallet: Pollar userId → the address the page claimed, bound once. */
+  wallets: Record<string, string>;
   traps: Record<string, TrapOwnership>;                              // on-chain trapId -> owner
   backers: Record<string, Record<string, number>>;                   // runId -> user -> micro-USD backed
   settled: Record<string, { ts: number; paid: Record<string, number> }>;
   history: LedgerEntry[];
 }
-const EMPTY = (): LedgerFile => ({ version: 1, balances: {}, payments: {}, traps: {}, backers: {}, settled: {}, history: [] });
+const EMPTY = (): LedgerFile => ({ version: 1, balances: {}, payments: {}, wallets: {}, traps: {}, backers: {}, settled: {}, history: [] });
 const HISTORY_CAP = 500;
 
 export class FiatLedger {
@@ -102,6 +106,18 @@ export class FiatLedger {
     p.status = "failed"; this.save();
   }
   payment(paymentId: string) { return this.d.payments[paymentId]; }
+  /** A refused signature that may belong to another sender is not failed for everyone. */
+  unmarkFailed(paymentId: string) { const p = this.d.payments[paymentId]; if (p && p.status === "failed") { delete this.d.payments[paymentId]; this.save(); } }
+  /** Bind a Pollar user to one Solana address, once: one address per user, one user per address, never changed here. */
+  bindWallet(userId: string, address: string): string {
+    const have = this.d.wallets[userId];
+    if (have) { if (have !== address) throw new FiatError("This Pollar account is already linked to a different wallet.", 409); return have; }
+    const owner = Object.entries(this.d.wallets).find(([, a]) => a === address)?.[0];
+    if (owner && owner !== userId) throw new FiatError("That wallet is already linked to another Pollar account.", 409);
+    this.d.wallets[userId] = address; this.save();
+    return address;
+  }
+  walletOf(userId: string): string | null { return this.d.wallets[userId] ?? null; }
   pendingPayments(): { id: string; user: string; micro: number }[] {
     return Object.entries(this.d.payments).filter(([, p]) => p.status === "pending").map(([id, p]) => ({ id, user: p.user, micro: p.micro }));
   }
@@ -168,8 +184,10 @@ export class FiatLedger {
 export interface PollarSession {
   /** Pollar user id (content.userId). */
   userId: string;
-  /** The player's identity: the Solana wallet address (content.wallet). */
-  wallet: string;
+  /** The player's identity: the Solana wallet address, or null when Pollar's server side gave none. */
+  wallet: string | null;
+  /** True on the call that verified the token with Pollar (not served from the cache). */
+  fresh?: boolean;
   /** Pollar network of the application: "testnet" (Solana devnet) or "mainnet". */
   network: "testnet" | "mainnet" | string;
   /** Unix ms when the token stops being valid. */
@@ -203,27 +221,79 @@ export const POLLAR_ERRORS: Record<string, { msg: string; code: number }> = {
   SDK_TOKEN_WRONG_APPLICATION: { msg: "That sign-in belongs to a different Pollar application. Sign in here again.", code: 403 },
 };
 
+/** base58 (Bitcoin alphabet) decode; null when the text is not base58. */
+export function base58decode(s: string): Uint8Array | null {
+  const A = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  if (!s || /[^1-9A-HJ-NP-Za-km-z]/.test(s)) return null;
+  let n = 0n; for (const c of s) n = n * 58n + BigInt(A.indexOf(c));
+  const out: number[] = []; while (n > 0n) { out.unshift(Number(n % 256n)); n /= 256n; }
+  for (const c of s) { if (c !== "1") break; out.unshift(0); }
+  return Uint8Array.from(out);
+}
+/** A Solana address: base58 that decodes to 32 bytes. (A Stellar G… address is base32 and never passes.) */
+export const isSolanaAddress = (s: unknown): s is string => typeof s === "string" && s.length >= 32 && s.length <= 44 && base58decode(s)?.length === 32;
+const saysSolana = (v: unknown) => /^(solana|sol)$/i.test(String(v ?? "").trim());
+const saysOtherChain = (v: unknown) => /^(stellar|xlm|polygon|pol|matic|ethereum|eth)$/i.test(String(v ?? "").trim());
+
+/**
+ * Find the Solana wallet address in whatever shape Pollar sends: a bare address string; an object keyed by chain
+ * ({ solana: "…" }); an object with chain|network|type and address|public_key|publicKey|pubkey; an array of those;
+ * all of it under `wallet`, `wallets`, `wallet_public_key` or deeper. Chain labels match case-insensitively; an
+ * unlabelled string counts when it is a base58 32-byte address.
+ */
+export function findSolanaAddress(root: unknown): string | null {
+  const seen = new Set<unknown>();
+  const labelled: string[] = [], unlabelled: string[] = [];
+  const addrOf = (o: any) => [o.address, o.public_key, o.publicKey, o.pubkey, o.value].find(isSolanaAddress) ?? null;
+  const walk = (v: any, label: string | null, depth: number) => {
+    if (v == null || depth > 6 || (typeof v === "object" && seen.has(v))) return;
+    if (typeof v === "string") { if (isSolanaAddress(v)) (saysSolana(label) ? labelled : saysOtherChain(label) ? [] : unlabelled).push(v); return; }
+    if (typeof v !== "object") return;
+    seen.add(v);
+    if (Array.isArray(v)) { for (const e of v) walk(e, label, depth + 1); return; }
+    const chain = v.chain ?? v.network ?? v.type ?? v.blockchain;
+    const a = addrOf(v);
+    if (a) { if (saysSolana(chain) || (chain == null && !saysOtherChain(label))) (saysSolana(chain) ? labelled : unlabelled).push(a); return; }
+    for (const [k, x] of Object.entries(v)) walk(x, saysSolana(k) || saysOtherChain(k) ? k : (saysSolana(chain) ? "solana" : label), depth + 1);
+  };
+  walk(root, null, 0);
+  return labelled[0] ?? unlabelled[0] ?? null;
+}
+/** The SHAPE of a response for diagnostics: key names and value types only; every string becomes its length. */
+export function shapeOf(v: unknown, depth = 0): unknown {
+  if (v === null) return null;
+  if (typeof v === "string") return `string(${v.length})`;
+  if (typeof v !== "object") return typeof v;
+  if (depth > 5) return "…";
+  if (Array.isArray(v)) return v.slice(0, 5).map((x) => shapeOf(x, depth + 1));
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shapeOf(x, depth + 1)]));
+}
+
 /**
  * Real gateway: Pollar Server API v3 (`https://server.api.pollar.xyz/v3`), secret key in `x-pollar-api-key`.
  * `POST /tokens/verify { token }` → `{ code: "SERVER_TOKEN_VERIFIED", content: { userId, applicationId, expiresAt,
- * network, wallet, profile, authProvider } }`. Verified tokens are cached until `expiresAt`.
+ * network, wallet, profile, authProvider } }`. When that content carries no Solana address, `GET /users?q=<userId>`
+ * (rows: id, wallet_public_key, wallets: [{ network, public_key }]) is read for the user's Solana wallet.
+ * Verified tokens are cached until `expiresAt`.
  */
 export class PollarServerApi implements PollarGateway {
   readonly kind = "pollar" as const;
   private readonly base: string; private readonly secret: string;
   private readonly cache = new Map<string, PollarSession>();
-  constructor(o: { secretKey: string; baseUrl?: string }) {
+  readonly log: (line: string) => void;
+  constructor(o: { secretKey: string; baseUrl?: string; log?: (line: string) => void }) {
     this.secret = o.secretKey;
     this.base = (o.baseUrl ?? "https://server.api.pollar.xyz/v3").replace(/\/$/, "");
+    this.log = o.log ?? ((line) => console.warn(line));
   }
+  private headers() { return { "x-pollar-api-key": this.secret, "content-type": "application/json", accept: "application/json" }; }
   async verifySession(token: string): Promise<PollarSession> {
     const hit = this.cache.get(token);
     if (hit && hit.expiresAt > Date.now()) return hit;
     this.cache.delete(token);
     let r: Response;
-    try {
-      r = await fetch(`${this.base}/tokens/verify`, { method: "POST", headers: { "x-pollar-api-key": this.secret, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ token }), signal: AbortSignal.timeout(15_000) });
-    } catch { throw new FiatError("Pollar is not answering. Try again in a moment.", 503); }
+    try { r = await fetch(`${this.base}/tokens/verify`, { method: "POST", headers: this.headers(), body: JSON.stringify({ token }), signal: AbortSignal.timeout(15_000) }); }
+    catch { throw new FiatError("Pollar is not answering. Try again in a moment.", 503); }
     const p: any = await r.json().catch(() => ({}));
     const code = String(p.code ?? "");
     if (!r.ok || code !== "SERVER_TOKEN_VERIFIED") {
@@ -233,35 +303,49 @@ export class PollarServerApi implements PollarGateway {
       throw new FiatError("Pollar could not verify that sign-in. Sign in again.", 401);
     }
     const c = p.content ?? {};
-    const wallet = walletAddress(c.wallet, c.wallets);
-    if (!wallet) throw new FiatError("Your Pollar account has no Solana wallet yet. Open the wallet page once, then try again.", 403);
+    const userId = String(c.userId ?? "");
+    let wallet = findSolanaAddress({ wallet: c.wallet, wallets: c.wallets, wallet_public_key: c.wallet_public_key, solana: c.solana ?? c.solanaWallet });
+    if (!wallet) {
+      // diagnostic (temporary): the shape only, never a value
+      this.log(`[fiat] verify shape (no Solana wallet found): ${JSON.stringify(shapeOf(p))}`);
+      wallet = await this.listSolanaWallet(userId);
+    }
     const expiresAt = toMs(c.expiresAt);
-    const s: PollarSession = { userId: String(c.userId ?? ""), wallet, network: String(c.network ?? ""), expiresAt, authProvider: c.authProvider ? String(c.authProvider) : undefined };
-    if (expiresAt > Date.now()) this.cache.set(token, s);
+    const s: PollarSession = { userId, wallet, network: String(c.network ?? ""), expiresAt, authProvider: c.authProvider ? String(c.authProvider) : undefined, fresh: true };
+    if (expiresAt > Date.now()) this.cache.set(token, { ...s, fresh: false });
     if (this.cache.size > 5000) for (const [k, v] of this.cache) if (v.expiresAt <= Date.now()) this.cache.delete(k);
     return s;
   }
-}
-/** content.wallet is documented as the wallet; accept a bare address, a wallet object, or a list with a SOLANA entry. */
-function walletAddress(w: any, ws?: any): string | null {
-  const pick = (x: any): string | null => {
-    if (!x) return null;
-    if (typeof x === "string") return x;
-    if (Array.isArray(x)) { const sol = x.find((e) => String(e?.chain ?? "").toUpperCase() === "SOLANA") ?? x[0]; return pick(sol); }
-    if (x.chain && String(x.chain).toUpperCase() !== "SOLANA" && Array.isArray(ws)) { const sol = ws.find((e: any) => String(e?.chain ?? "").toUpperCase() === "SOLANA"); if (sol) return pick(sol); }
-    return typeof x.address === "string" ? x.address : typeof x.publicKey === "string" ? x.publicKey : null;
-  };
-  return pick(w) ?? pick(ws);
+  /** `GET /users?q=<userId>`: the user's wallets, one per chain. Null when the lookup has no Solana wallet or fails. */
+  async listSolanaWallet(userId: string): Promise<string | null> {
+    if (!userId) return null;
+    try {
+      const r = await fetch(`${this.base}/users?q=${encodeURIComponent(userId)}&filter=with-wallet&limit=20`, { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
+      const p: any = await r.json().catch(() => ({}));
+      if (!r.ok) { this.log(`[fiat] users lookup answered ${r.status} ${String(p.code ?? "")}`); return null; }
+      const c = p.content ?? p;
+      const rows: any[] = Array.isArray(c) ? c : (c.users ?? c.items ?? c.data ?? c.rows ?? []);
+      const me = rows.find((u) => String(u.id ?? u.userId ?? "") === userId) ?? (rows.length === 1 ? rows[0] : null);
+      if (!me) { this.log(`[fiat] users lookup shape (no row for this user): ${JSON.stringify(shapeOf(p))}`); return null; }
+      const w = findSolanaAddress({ wallets: me.wallets, wallet_public_key: me.wallet_public_key, wallet: me.wallet });
+      if (!w) this.log(`[fiat] users lookup row shape (no Solana wallet): ${JSON.stringify(shapeOf(me))}`);
+      return w;
+    } catch { this.log("[fiat] users lookup failed (network)"); return null; }
+  }
 }
 const toMs = (x: any): number => { if (typeof x === "number") return x < 1e12 ? x * 1000 : x; const t = Date.parse(String(x ?? "")); return Number.isFinite(t) ? t : 0; };
 
-// ---------------------------------------------------------------- Solana: confirm a USDC transfer over RPC
+// ---------------------------------------------------------------- Solana: confirm USDC transfers over RPC
 
 export interface SolanaRpc {
   /** `getTransaction(sig, { encoding: "jsonParsed", commitment: "finalized" })`; null when not finalized / unknown. */
   getTransaction(signature: string): Promise<any | null>;
   /** The cluster's genesis hash, which says which network RPC_URL points at. */
   getGenesisHash(): Promise<string>;
+  /** Recent signatures that touched an address, newest first (finalized). */
+  getSignaturesForAddress(address: string, limit: number): Promise<{ signature: string; err: unknown }[]>;
+  /** The owner's token accounts for a mint (addresses). */
+  getTokenAccountsByOwner(owner: string, mint: string): Promise<string[]>;
 }
 export class JsonRpc implements SolanaRpc {
   private genesis: string | null = null;
@@ -277,6 +361,8 @@ export class JsonRpc implements SolanaRpc {
   }
   getTransaction(signature: string) { return this.call("getTransaction", [signature, { encoding: "jsonParsed", commitment: "finalized", maxSupportedTransactionVersion: 0 }]); }
   async getGenesisHash() { return (this.genesis ??= String(await this.call("getGenesisHash", []))); }
+  async getSignaturesForAddress(address: string, limit: number) { const r = await this.call("getSignaturesForAddress", [address, { limit, commitment: "finalized" }]); return (r ?? []).map((x: any) => ({ signature: String(x.signature), err: x.err ?? null })); }
+  async getTokenAccountsByOwner(owner: string, mint: string) { const r = await this.call("getTokenAccountsByOwner", [owner, { mint }, { encoding: "jsonParsed", commitment: "finalized" }]); return (r?.value ?? []).map((x: any) => String(x.pubkey)); }
 }
 
 export const GENESIS: Record<string, "mainnet" | "devnet" | "testnet"> = {
@@ -297,32 +383,37 @@ export interface UsdcConfig {
 }
 
 /**
- * Confirm one USDC payment on-chain and credit it exactly once per signature.
- * Refuses (and marks failed) when the sender is not the player's wallet, the treasury did not receive
- * the mint, or the amount differs. Not yet finalized → pending (retried), never credited.
+ * Confirm one USDC payment on-chain and credit it exactly once per signature. Amounts are integer base units
+ * (micro-USDC) compared as BigInt; `amountMicro` null means "credit what the treasury received" (reconciliation).
+ * Refuses (and marks failed) when the sender is not the player's wallet, the treasury did not receive the mint, or
+ * the amount differs. Not yet finalized → pending (retried), never credited.
  */
-export async function confirmUsdcPayment(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, signature: string, session: PollarSession, amountMicro: number) {
+export async function confirmUsdcPayment(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, signature: string, session: PollarSession, amountMicro: number | null) {
   const user = session.wallet;
+  if (!user) throw new FiatError("Your Pollar account has no Solana wallet yet.", 403);
   const existing = ledger.payment(signature);
   if (existing?.status === "credited") return { status: "credited" as const, credited: false, duplicate: true, micro: existing.micro };
   if (!/^[1-9A-HJ-NP-Za-km-z]{64,100}$/.test(signature)) throw new FiatError("That is not a Solana transaction signature.", 400);
-  if (!Number.isInteger(amountMicro) || amountMicro <= 0) throw new FiatError("Say how much USDC the payment was.", 400);
+  if (amountMicro !== null && (!Number.isInteger(amountMicro) || amountMicro <= 0)) throw new FiatError("Say how much USDC the payment was.", 400);
   // the player's Pollar app and this server must be on the same Solana network
   const cluster = GENESIS[await rpc.getGenesisHash()] ?? "unknown";
   const theirs = pollarCluster(session.network);
   if (theirs && theirs !== cluster) throw new FiatError(`Your Pollar wallet is on Solana ${theirs}, but this server settles on Solana ${cluster}. That payment cannot be credited here.`, 409);
   const tx = await rpc.getTransaction(signature);
-  if (!tx) { ledger.markPending(signature, user, amountMicro); return { status: "pending" as const, credited: false, duplicate: false, micro: amountMicro }; }
+  if (!tx) { ledger.markPending(signature, user, amountMicro ?? 0); return { status: "pending" as const, credited: false, duplicate: false, micro: amountMicro ?? 0 }; }
   if (tx.meta?.err) { ledger.markFailed(signature); throw new FiatError("That transaction failed on Solana. Nothing was credited.", 402); }
   const deltas = tokenDeltas(tx, cfg.mint);
   const received = deltas.filter((d) => d.owner === cfg.treasury).reduce((n, d) => n + d.delta, 0n);
   const sent = deltas.filter((d) => d.owner === user).reduce((n, d) => n - d.delta, 0n);
   if (received <= 0n) { ledger.markFailed(signature); throw new FiatError("That transaction did not pay USDC to the game treasury.", 402); }
   if (sent <= 0n) { ledger.markFailed(signature); throw new FiatError("That payment was not sent from your Pollar wallet.", 403); }
-  if (received !== BigInt(amountMicro)) { ledger.markFailed(signature); throw new FiatError(`The treasury received $${(Number(received) / MICRO).toFixed(2)}, not $${(amountMicro / MICRO).toFixed(2)}.`, 402); }
-  const r = ledger.creditFromPayment(signature, user, amountMicro);
-  return { status: "credited" as const, ...r, micro: amountMicro };
+  if (amountMicro !== null && received !== BigInt(amountMicro)) { ledger.markFailed(signature); throw new FiatError(`The treasury received $${microToUsd(received)}, not $${microToUsd(BigInt(amountMicro))}.`, 402); }
+  const micro = Number(received);
+  const r = ledger.creditFromPayment(signature, user, micro);
+  return { status: "credited" as const, ...r, micro };
 }
+/** Integer micro-USD → "5.00", with no float on the way. */
+export function microToUsd(m: bigint | number): string { const n = BigInt(m); const neg = n < 0n; const a = neg ? -n : n; const w = a / 1_000_000n, f = a % 1_000_000n; return `${neg ? "-" : ""}${w}.${(f / 10_000n).toString().padStart(2, "0")}`; }
 /** Per token account owner: post − pre balance (base units) for one mint, from the transaction's token balances. */
 function tokenDeltas(tx: any, mint: string): { owner: string; delta: bigint }[] {
   const pre = new Map<number, bigint>(), owners = new Map<number, string>();
@@ -337,6 +428,41 @@ function tokenDeltas(tx: any, mint: string): { owner: string; delta: bigint }[] 
   for (const [i, p] of pre) if (!seen.has(i) && owners.get(i)) out.push({ owner: owners.get(i)!, delta: -p });   // account closed in this tx
   return out;
 }
+
+/**
+ * Reconciliation: credit finalized USDC transfers from this player's wallet to the treasury that were never credited
+ * (the page's confirm call was refused, or never came). Reads the treasury's token accounts for the mint, their
+ * recent signatures, and runs each unknown one through confirmUsdcPayment with no expected amount. Same
+ * once-per-signature rule. Returns what was credited this time.
+ */
+/** What reconciliation learned about a signature, so the next pass does not fetch it again: its USDC sender, or that it is no deposit. */
+const seenDeposits = new Map<string, string | null>();
+export async function reconcileDeposits(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, session: PollarSession, o: { limit?: number; log?: (line: string) => void } = {}) {
+  const credited: { signature: string; micro: number }[] = [];
+  if (!session.wallet) return credited;
+  const accounts = await rpc.getTokenAccountsByOwner(cfg.treasury, cfg.mint);
+  for (const account of accounts) {
+    for (const { signature, err } of await rpc.getSignaturesForAddress(account, o.limit ?? 100)) {
+      if (err) continue;
+      if (ledger.payment(signature)?.status === "credited") continue;             // once per signature
+      if (seenDeposits.has(signature) && seenDeposits.get(signature) !== session.wallet) continue;   // someone else's, or no deposit
+      // an earlier refusal (a wrong amount claimed by the page, say) does not stop a real deposit from being credited
+      ledger.unmarkFailed(signature);
+      try {
+        const r = await confirmUsdcPayment(ledger, rpc, cfg, signature, session, null);
+        if (r.status === "credited" && r.credited) { seenDeposits.set(signature, session.wallet); credited.push({ signature, micro: r.micro }); o.log?.(`[fiat] reconciled ${signature} +$${microToUsd(r.micro)} for wallet ${session.wallet.slice(0, 4)}…`); }
+      } catch (e) {
+        if (!(e instanceof FiatError)) throw e;
+        // 403: a transfer from another wallet (it stays available to its own sender); 402: no USDC to the treasury / failed on chain
+        if (e.code === 403) { ledger.unmarkFailed(signature); seenDeposits.set(signature, senderOf(await rpc.getTransaction(signature), cfg.mint)); }
+        else if (e.code === 402) seenDeposits.set(signature, null);
+      }
+    }
+  }
+  return credited;
+}
+/** The owner that paid USDC in a transaction (the one whose balance of the mint went down), or null. */
+function senderOf(tx: any, mint: string): string | null { return tx ? (tokenDeltas(tx, mint).find((d) => d.delta < 0n)?.owner ?? null) : null; }
 
 /** base58 (Bitcoin alphabet) for a 32-byte pubkey; keeps the server free of wallet libraries. */
 export function base58(bytes: Uint8Array): string {

@@ -19,7 +19,7 @@ import { RunManager, type Run } from "./runs.ts";
 import { handleRisk, requirement, simVerifier, facilitatorVerifier } from "./oracle.ts";
 import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
-import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58, confirmPayment, confirmUsdcPayment, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway, type PollarSession, type SolanaRpc } from "./fiat.ts";
+import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58, isSolanaAddress, confirmPayment, confirmUsdcPayment, reconcileDeposits, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway, type PollarSession, type SolanaRpc } from "./fiat.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
 import { MemoryProfileStore, validateName, shortAddress, type ProfileStore } from "./profiles.ts";
 import { RoomError } from "./rooms.ts";
@@ -178,11 +178,26 @@ export function createApp(o: AppOptions = {}): App {
   /** I6: who is this viewer? Pollar mode: the access token (Authorization: Bearer) is verified with Pollar and the
    *  identity is the Solana wallet address; a guest id (guest-…) is still accepted for seats, names and rooms, but
    *  it can never be funded. Demo-credit mode: a plain {user} / x-user. */
+  /** Reconcile this player's uncredited deposits in the background: on every sign-in (a token is verified with
+   *  Pollar once, then served from the cache), and when a wallet is bound. */
+  function reconcileSoon(session: PollarSession) {
+    if (pollar.kind !== "pollar" || !session.wallet) return;
+    (async () => { try { await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, session, { log: console.log }); } catch (e) { console.warn("[fiat] reconciliation failed:", (e as Error).message); } })();
+  }
+  /** The verified session with its Solana wallet: from Pollar's verify content, else Pollar's users lookup (inside
+   *  verifySession), else the address this user bound through POST /api/v1/fiat/wallet. */
+  async function sessionOf(token: string, o: { allowUnbound?: boolean } = {}): Promise<PollarSession> {
+    const s = await pollar.verifySession(token);
+    if (!s.wallet) s.wallet = ledger.walletOf(s.userId);
+    if (!s.wallet && !o.allowUnbound) throw new FiatError("We could not read your Solana wallet from Pollar. Open the funds page so it can send your wallet address.", 428);
+    if (s.fresh) reconcileSoon(s);
+    return s;
+  }
   async function whoIs(req: IncomingMessage, body: Record<string, any>): Promise<{ id: string; session?: PollarSession }> {
     const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
     const u = String(body.user ?? req.headers["x-user"] ?? "").trim().slice(0, 64);
     if (pollar.kind === "pollar") {
-      if (m) { const s = await pollar.verifySession(m[1].trim()); return { id: s.wallet, session: s }; }
+      if (m) { const s = await sessionOf(m[1].trim()); return { id: s.wallet!, session: s }; }
       if (/^guest-[A-Za-z0-9]{4,}$/.test(u)) return { id: u };
       throw new FiatError("Sign in with Google first.", 401);
     }
@@ -320,6 +335,30 @@ export function createApp(o: AppOptions = {}): App {
         const user = await identify(req, Object.fromEntries(url.searchParams));
         return json(res, 200, { ...bal(user), mode: pollar.kind, traps: ledger.trapsOf(user), history: ledger.history(user, 20) });
       }
+      if (p === "/api/v1/fiat/wallet" && req.method === "POST") {
+        // Last resort, used only when Pollar's server side gives no Solana address for this user: the page sends the
+        // address the SDK shows and it is bound to the verified Pollar userId once (one per user, one user per address,
+        // never changed from here). Deposits still credit only when the on-chain sender equals the bound address.
+        if (pollar.kind !== "pollar") return json(res, 404, { error: "Wallet binding only exists in Pollar mode." });
+        const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+        if (!m) throw new FiatError("Sign in with Google first.", 401);
+        const b = await readJson(req);
+        const s = await sessionOf(m[1].trim(), { allowUnbound: true });
+        if (s.wallet) return json(res, 200, { wallet: s.wallet, source: ledger.walletOf(s.userId) === s.wallet ? "bound" : "pollar" });
+        const address = String(b.address ?? "").trim();
+        if (!isSolanaAddress(address)) throw new FiatError("That is not a Solana wallet address.", 400);
+        const wallet = ledger.bindWallet(s.userId, address);
+        console.log(`[fiat] bound a wallet for Pollar user ${s.userId.slice(0, 6)}… (client-claimed; Pollar gave none)`);
+        reconcileSoon({ ...s, wallet });
+        return json(res, 200, { wallet, source: "bound" });
+      }
+      if (p === "/api/v1/fiat/reconcile" && req.method === "POST") {
+        if (pollar.kind !== "pollar") return json(res, 404, { error: "Nothing to reconcile in demo mode." });
+        const who = await whoIs(req, {});
+        if (!who.session) throw new FiatError("Sign in with Google first.", 401);
+        const credited = await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, who.session, { log: console.log });
+        return json(res, 200, { credited, ...bal(who.id) });
+      }
       if (p === "/api/v1/fiat/confirm" && req.method === "POST") {
         const b = await readJson(req);
         const who = await whoIs(req, b);
@@ -328,7 +367,7 @@ export function createApp(o: AppOptions = {}): App {
           if (!who.session) throw new FiatError("Sign in with Google to add funds.", 401);
           const signature = String(b.signature ?? b.paymentId ?? "").trim();
           if (!signature) throw new FiatError("signature required", 400);
-          const r = await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, signature, who.session, toMicro(Number(b.amount ?? 0)));
+          const r = await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, signature, who.session, toMicro(b.amount ?? 0));
           return json(res, r.status === "pending" ? 202 : 200, { signature, paymentId: signature, ...r, ...bal(who.id) });
         }
         const paymentId = String(b.paymentId ?? "").trim();

@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePollar, useChains, addressForChain } from "@pollar/react";
 import type { SubmitOutcome, TxHistoryState, WalletBalanceState } from "@pollar/core";
+import { fmtUsd, toTokens, unitsOf } from "./units";
 
 type Mode = "demo" | "pollar";
 const SERVER = (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "";
@@ -62,12 +63,13 @@ function readSdkToken(client: any): string | null {
     return String(t);
   } catch { return null; }
 }
-/** USDC on Solana from the balance hook's records (decimal units), or null while unknown. */
+/** USDC on Solana from the balance hook's records: Pollar reports integer base units, converted with the record's decimals. */
 function usdcOf(b: WalletBalanceState | undefined): number | null {
   if (!b || b.step !== "loaded") return null;
   const r = b.data.balances.find((x) => String(x.chain ?? "").toUpperCase() === "SOLANA" && x.code.toUpperCase() === "USDC");
-  const v = Number(r?.available ?? r?.balance ?? 0);
-  return Number.isFinite(v) ? v : 0;
+  if (!r) return 0;
+  const raw = r.available ?? r.balance ?? "0";
+  return /^\d+$/.test(String(raw)) ? toTokens(String(raw), r.decimals ?? 6) : Number(raw) || 0;
 }
 
 /**
@@ -136,6 +138,22 @@ export function useIdentity(mode: Mode) {
     if (mode === "demo" && user) h["x-user"] = user;
     return h;
   }, [mode, token, user]);
+  // Last resort: when Pollar's server side gives our server no Solana address (428), send the one the SDK shows. The
+  // server binds it to the verified Pollar user once; it trusts this claim only for identity, never for crediting
+  // (deposits still need the on-chain sender to equal the bound address).
+  const [walletBound, setWalletBound] = useState<string | null>(null);
+  useEffect(() => {
+    if (mode !== "pollar" || !token || !solAddress) return;
+    (async () => {
+      try {
+        const r = await fetch(SERVER + "/api/v1/fiat/balance", { headers: { authorization: `Bearer ${token}` } });
+        if (r.status !== 428) return;
+        const b = await fetch(SERVER + "/api/v1/fiat/wallet", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify({ address: solAddress }) });
+        const j = await b.json().catch(() => ({}));
+        if (b.ok) setWalletBound(j.wallet); else setPollarErr(friendly(j.error));
+      } catch { /* offline */ }
+    })();
+  }, [mode, token, solAddress]);
 
   /** USDC to the game treasury through the SDK's payment call (embedded wallets); returns the SubmitOutcome (`hash` = signature). */
   const sendUsdc = useCallback((destination: string, micro: number, mint: string): Promise<SubmitOutcome> => {
@@ -148,7 +166,7 @@ export function useIdentity(mode: Mode) {
     signOut: () => { p?.logout(); try { localStorage.removeItem("wt.session.token"); localStorage.removeItem(ID_KEY); localStorage.removeItem(MODE_KEY); } catch { /* private */ } },
     usdc, walletStep: p?.walletBalance.step ?? "idle", refreshWallet, sendUsdc,
     txHistory: (p?.txHistory ?? { step: "idle" }) as TxHistoryState, loadHistory, openTxHistory: () => p?.openTxHistoryModal(),
-    openWallet: () => p?.openWalletBalanceModal(), openSend: () => p?.openSendModal() };
+    openWallet: () => p?.openWalletBalanceModal(), openSend: () => p?.openSendModal(), walletBound };
 }
 
 /**
@@ -193,15 +211,25 @@ function when(iso: string | number) {
   return `${d.toLocaleDateString([], { day: "numeric", month: "short" })}, ${hm}`;
 }
 interface Row { id: string; text: string; amount: string | null; neg: boolean; at: string }
-/** One Pollar history record as a sentence. A USDC transfer to the game treasury reads "Added $x to game". */
-function rowOf(r: any, treasury?: string | null): Row {
+/** One Pollar history record as a sentence. Amounts are base units with the record's decimals (USDC: 6). A USDC
+ *  transfer to the game treasury reads "Added $x to game" once our server has credited that signature, and
+ *  "Payment sent, waiting for credit" until then. */
+function rowOf(r: any, treasury: string | null | undefined, credited: Set<string>): Row {
   const sum = String(r.summary ?? r.operation ?? "Wallet activity");
-  const amtRaw = r.details?.amount ?? r.amount ?? null;
-  const amtNum = amtRaw != null && Number.isFinite(Number(amtRaw)) ? Number(amtRaw) : null;
-  const toTreasury = treasury && (String(r.details?.destination ?? r.destination ?? "") === treasury || sum.includes(shortAddress(treasury)));
-  const text = toTreasury && amtNum !== null ? `Added ${usd(amtNum)} to game` : sum.replace(/\.$/, "");
-  return { id: String(r.id ?? r.hash), text, amount: amtNum !== null ? `${toTreasury ? "+" : ""}${usd(amtNum)}` : null, neg: false, at: when(r.createdAt) };
+  const d = r.details ?? {};
+  const amtRaw = d.amount ?? r.amount ?? null;
+  const decimals = typeof d.decimals === "number" ? d.decimals : 6;
+  const amt = amtRaw != null && /^\d+$/.test(String(amtRaw)) ? fmtUsd(String(amtRaw), decimals) : null;
+  const dest = String(d.destination ?? d.to ?? r.destination ?? "");
+  const toTreasury = !!treasury && (dest === treasury || sum.includes(shortAddress(treasury)));
+  const sig = String(r.hash ?? r.id ?? "");
+  const text = toTreasury ? (credited.has(sig) && amt ? `Added ${amt} to game` : "Payment sent, waiting for credit") : sum.replace(/\.$/, "");
+  return { id: String(r.id ?? r.hash), text, amount: amt ? `${toTreasury ? "+" : ""}${amt}` : null, neg: false, at: when(r.createdAt) };
 }
+/** Signatures the page is still trying to get credited, kept per player until the server answers credited. */
+const pendingKey = (user: string) => `wt.pending.${user}`;
+function loadPending(user: string): { signature: string; amount: number }[] { try { return JSON.parse(localStorage.getItem(pendingKey(user)) ?? "[]"); } catch { return []; } }
+function savePending(user: string, list: { signature: string; amount: number }[]) { try { if (list.length) localStorage.setItem(pendingKey(user), JSON.stringify(list)); else localStorage.removeItem(pendingKey(user)); } catch { /* private */ } }
 
 /** Fixtures for ?demo= (presentation only; nothing is sent to the server). */
 function fixture(demo: string | null) {
@@ -230,6 +258,8 @@ export function App({ mode }: { mode: Mode }) {
   const [copied, setCopied] = useState(false);
   const [, forceRender] = useState(0);
   const pollRef = useRef<number>(0);
+  const [pending, setPending] = useState<{ signature: string; amount: number }[]>([]);
+  const [checking, setChecking] = useState<{ busy: boolean; text: string }>({ busy: false, text: "" });
 
   const api = useCallback(async (path: string, body?: unknown) => {
     const r = await fetch(SERVER + path, body === undefined ? { headers: id.headers() } : { method: "POST", headers: id.headers(), body: JSON.stringify({ ...(body as object), ...(mode === "demo" ? { user: id.user } : {}) }) });
@@ -245,6 +275,35 @@ export function App({ mode }: { mode: Mode }) {
   }, [api, id.user, id.refreshWallet, id.loadHistory, mode]);
   useEffect(() => { fetch(SERVER + "/api/v1/treasury").then((r) => r.json()).then(setTreasury).catch(() => setTreasury(null)); }, []);
   useEffect(() => { refreshBalance(); }, [refreshBalance]);
+
+  // Signatures that were sent but not yet credited: retried on load and every 30 s until the server says credited.
+  const retryPending = useCallback(async () => {
+    if (mode !== "pollar" || !id.user || !id.token) return;
+    const list = loadPending(id.user); if (!list.length) { setPending([]); return; }
+    const keep: typeof list = [];
+    for (const item of list) {
+      try {
+        const r = await api("/api/v1/fiat/confirm", { signature: item.signature, amount: item.amount });
+        if (r.status === 200 && r.status !== undefined && r.credited !== undefined) { setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` }); continue; }   // credited (or already was)
+        keep.push(item);   // 202 pending
+      } catch (e: any) { setFunding({ step: "refused", text: friendly(e.message) }); }   // a definite refusal: drop it and say why
+    }
+    savePending(id.user, keep); setPending(keep);
+    if (keep.length !== list.length) refreshBalance();
+  }, [mode, id.user, id.token, api, refreshBalance]);
+  useEffect(() => { retryPending(); const t = setInterval(retryPending, 30_000); return () => clearInterval(t); }, [retryPending]);
+  // On sign-in, ask the server to credit any finalized deposit from this wallet it has not credited yet.
+  const reconcile = useCallback(async (manual = false) => {
+    if (mode !== "pollar" || !id.user || !id.token) return;
+    if (manual) setChecking({ busy: true, text: "Checking recent payments…" });
+    try {
+      const r = await api("/api/v1/fiat/reconcile", {});
+      const n = (r.credited ?? []).length;
+      if (manual) setChecking({ busy: false, text: n ? `Found ${n} payment${n === 1 ? "" : "s"}: added ${usd((r.credited as any[]).reduce((a, c) => a + c.micro, 0) / 1e6)}.` : "No missing payments. Everything sent from your wallet is already in your game balance." });
+      if (n) refreshBalance();
+    } catch (e: any) { if (manual) setChecking({ busy: false, text: friendly(e.message) }); }
+  }, [mode, id.user, id.token, api, refreshBalance]);
+  useEffect(() => { if (mode === "pollar" && id.user && id.token) reconcile(false); }, [mode, id.user, id.token]);
 
   // the live room: the current run's name, turn, fuse, cleared tiles and open seats
   useEffect(() => {
@@ -277,7 +336,9 @@ export function App({ mode }: { mode: Mode }) {
   const amt = showCustom && custom.trim() !== "" ? Number(custom) : amount;
   const walletEmpty = mode === "pollar" && usdc !== null && usdc < amt;
   const canAdd = signedIn && amt > 0 && funding.step !== "confirming" && !walletEmpty && !(mode === "pollar" && !treasury?.address);
-  const rows: Row[] = demo && demo.signedIn ? [...demo.rows] : (id.txHistory.step === "loaded" ? id.txHistory.data.records.map((r: any) => rowOf(r, treasury?.address)) : []);
+  const creditedSigs = useMemo(() => new Set<string>((balance?.history ?? []).filter((h: any) => h.reason === "pollar payment" && h.ref).map((h: any) => String(h.ref))), [balance]);
+  const rows: Row[] = demo && demo.signedIn ? [...demo.rows] : (id.txHistory.step === "loaded" ? id.txHistory.data.records.map((r: any) => rowOf(r, treasury?.address, creditedSigs)) : []);
+  const confirming = funding.step === "confirming" || pending.length > 0;
 
   async function copyAddress() { if (await copyText(address)) { setCopied(true); setTimeout(() => setCopied(false), 2000); } }
 
@@ -293,18 +354,25 @@ export function App({ mode }: { mode: Mode }) {
         await refreshBalance(); return;
       }
       if (!treasury?.address || !treasury.usdcMint) throw new Error("The server has no treasury address or USDC mint for this network yet.");
+      // sendPayment takes integer base units for Solana (the mint's smallest unit): $5.00 of USDC is "5000000"
       const out = await id.sendUsdc(treasury.address, micro, treasury.usdcMint);
       if (out.status === "error") throw new Error(friendly((out as any).details ?? (out as any).message, "The payment was not sent."));
       if (out.status === "cosign_pending") throw new Error("The payment is waiting for another device's approval.");
-      // the signature goes to our server; "pending" means not finalized yet, so keep asking until it is credited
+      // the signature is kept until the server says credited (retried on load and every 30 s), then asked for now
+      const mine = [...loadPending(id.user), { signature: out.hash, amount: amt }]; savePending(id.user, mine); setPending(mine);
       const gen = ++pollRef.current;
       for (let i = 0; i < 40; i++) {
-        const r = await api("/api/v1/fiat/confirm", { signature: out.hash, amount: amt });
-        if (r.status === 200 && r.credited !== undefined) { setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` }); await refreshBalance(); return; }
+        let r: any;
+        try { r = await api("/api/v1/fiat/confirm", { signature: out.hash, amount: amt }); }
+        catch (e: any) { savePending(id.user, loadPending(id.user).filter((x) => x.signature !== out.hash)); setPending(loadPending(id.user)); throw e; }   // a definite refusal
+        if (r.status === 200 && r.credited !== undefined) {
+          savePending(id.user, loadPending(id.user).filter((x) => x.signature !== out.hash)); setPending(loadPending(id.user));
+          setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` }); await refreshBalance(); return;
+        }
         if (gen !== pollRef.current) return;
         await new Promise((res) => setTimeout(res, 3000));
       }
-      setFunding({ step: "refused", text: "The payment is taking longer than usual. Your balance updates when Solana confirms it." });
+      setFunding({ step: "confirming", text: "Confirming your payment…" });   // still pending: the 30 s retry keeps going
     } catch (e: any) { setFunding({ step: "refused", text: friendly(e.message) }); }
   }
 
@@ -376,12 +444,15 @@ export function App({ mode }: { mode: Mode }) {
               ? <input className="custom" inputMode="decimal" placeholder="0.00" aria-label="Custom amount in dollars" autoFocus value={custom} onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, ""))} />
               : <button type="button" className="chip dashed" onClick={() => setShowCustom(true)}>Other amount</button>}
           </div>
+          {mode === "pollar" && amt > 0 && !walletEmpty && <p className="units">You're adding {usd(amt)} (Pollar shows this as {unitsOf(amt)} units of USDC)</p>}
           <div className="actions">
-            <button type="button" className="btn red" disabled={!canAdd} aria-busy={funding.step === "confirming"} onClick={addFunds}>{`Add ${money(amt > 0 ? amt : 0)} to game`}</button>
+            <button type="button" className="btn red" disabled={!canAdd || confirming} aria-busy={confirming} onClick={addFunds}>{`Add ${money(amt > 0 ? amt : 0)} to game`}</button>
             {mode === "pollar" && <button type="button" className="btn outline" onClick={id.openSend}>Withdraw</button>}
+            {mode === "pollar" && <button type="button" className="btn outline" disabled={checking.busy} onClick={() => reconcile(true)}>Check for missing payments</button>}
           </div>
-          {funding.step === "confirming" && <div className="status" role="status" aria-live="polite">{funding.text}<div className="progress" aria-hidden="true"></div></div>}
-          {funding.step === "done" && <p className="status ok" role="status" aria-live="polite">{funding.text}</p>}
+          {confirming && <div className="status" role="status" aria-live="polite">Confirming your payment…<div className="progress" aria-hidden="true"></div></div>}
+          {checking.text && <p className="status" role="status">{checking.text}</p>}
+          {funding.step === "done" && !confirming && <p className="status ok" role="status" aria-live="polite">{funding.text}</p>}
           {funding.step === "refused" && <p className="status err" role="alert">{funding.text}</p>}
           <p className="foot">{mode === "pollar" ? "Pollar pays the network fee. Your balance updates in about 20 seconds." : "Play money for this server only."}</p>
         </section>
