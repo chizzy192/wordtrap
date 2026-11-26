@@ -9,8 +9,16 @@ import { createApp, type App } from "../src/main.ts";
 import { FiatLedger, MockPollar, MICRO } from "../src/fiat.ts";
 
 const salt = new Uint8Array(32).fill(5);
-const post = (base: string, path: string, body: unknown) =>
-  fetch(base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+/** POST helper. Planting needs a seat, so for plant-fiat the caller is seated first and the seat token sent. */
+const post = async (base: string, path: string, body: unknown) => {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const user = (body as any)?.user;
+  if (/plant-fiat/.test(path) && user) {
+    const seat = await fetch(base + path.replace(/plant-fiat(-batch)?$/, "seat"), { method: "POST", headers: { ...headers, "x-user": user }, body: JSON.stringify({ action: "take" }) }).then((r) => r.json());
+    if (seat.token) headers["x-seat-token"] = seat.token;
+  }
+  return fetch(base + path, { method: "POST", headers, body: JSON.stringify(body) });
+};
 
 async function boot(o: Parameters<typeof createApp>[0] = {}): Promise<{ app: App; base: string }> {
   const app = createApp({ sim: false, makeChain: async () => new MockChain(), ledgerPath: null, cfg: { tiles: 2 }, ...o });
@@ -41,7 +49,7 @@ test("plant-fiat → Byte plays the word → reveal-fiat credits the owner stake
   assert.equal(back.balanceMicro, 0);
   assert.equal(back.backerTotal, 10);
 
-  const word = state.hand[0];
+  const word = state.hand.find((w: string) => w !== state.safe)!;
   const c = await treasuryCommitment(base, word);
   const planted = await post(base, `/runs/${runId}/plant-fiat`, { user: "alice", commitmentHex: c, stake: 1 }).then((r) => r.json());
   assert.equal(planted.balanceMicro, 4 * MICRO);
@@ -75,7 +83,7 @@ test("reveal-fiat with a wrong salt: legible 400, no credit, trap stays armed; w
   const { app, base } = await boot();
   const { runId, auth, state } = await startRun(base);
   await post(base, "/dev/credit", { user: "alice", amount: 2 });
-  const word = state.hand[0];
+  const word = state.hand.find((w: string) => w !== state.safe)!;
   const planted = await post(base, `/runs/${runId}/plant-fiat`, { user: "alice", commitmentHex: await treasuryCommitment(base, word), stake: 1 }).then((r) => r.json());
   await fetch(`${base}/api/v1/runs/${runId}/pass`, { method: "POST", headers: auth, body: "{}" });
   await fetch(`${base}/api/v1/runs/${runId}/play`, { method: "POST", headers: auth, body: JSON.stringify({ word }) });
@@ -124,7 +132,7 @@ test("restart: the ledger is rebuilt from data/fiat-ledger.json with balances an
   const first = await boot({ ledgerPath: path });
   const { runId, state } = await startRun(first.base);
   await post(first.base, "/dev/credit", { user: "alice", amount: 4, paymentId: "pay_r1" });
-  const word = state.hand[1];
+  const word = state.hand.filter((w: string) => w !== state.safe)[1];
   const planted = await post(first.base, `/runs/${runId}/plant-fiat`, { user: "alice", commitmentHex: await treasuryCommitment(first.base, word), stake: 1.5 }).then((r) => r.json());
   await first.app.close();
   assert.ok(existsSync(path));
@@ -187,7 +195,7 @@ test("pick a side: my-position matches proRata for two backers after one mine fi
   await post(base, `/runs/${runId}/back-fiat`, { user: "alice", amount: 6 });
   await post(base, `/runs/${runId}/back-fiat`, { user: "bob", amount: 2 });
   // carol mines a hand word for $1 and Byte plays it: she gets stake + 2x bonus = $3, the pool paid $2
-  const word = state.hand[0];
+  const word = state.hand.find((w: string) => w !== state.safe)!;
   const planted = await post(base, `/runs/${runId}/plant-fiat`, { user: "carol", commitmentHex: await treasuryCommitment(base, word), stake: 1 }).then((r) => r.json());
   await fetch(`${base}/api/v1/runs/${runId}/pass`, { method: "POST", headers: auth, body: "{}" });
   await fetch(`${base}/api/v1/runs/${runId}/play`, { method: "POST", headers: auth, body: JSON.stringify({ word }) });

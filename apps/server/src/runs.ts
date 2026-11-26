@@ -6,11 +6,12 @@ import type { BoardState, FeedEvent } from "@wordtrap/shared";
 import type { Chain } from "./chain/types.ts";
 import { Match, type MatchConfig } from "./match.ts";
 import { SimWallet, type AgentWallet } from "./wallet.ts";
+import { Room, type Seat } from "./rooms.ts";
 
 export interface SeqEvent { seq: number; t: number; e: FeedEvent }
 /** The board as it was right after event `seq` (seq 0 = before the first event). */
 export interface Snapshot { seq: number; t: number; state: BoardState }
-export interface Run { id: string; key: string; match: Match; chain: Chain; events: SeqEvent[]; history: Snapshot[]; seq: number; startedAt: number }
+export interface Run { id: string; key: string; match: Match; chain: Chain; room: Room; events: SeqEvent[]; history: Snapshot[]; seq: number; startedAt: number }
 
 export const MAX_EVENTS = 200;
 /** Spectator delay: snapshots kept per run so GET /spectate?delay=N can serve the board as it was N seconds ago. */
@@ -27,6 +28,10 @@ export interface RunManagerOptions {
   onRun?: (run: Run) => void;
   /** Backers the chain cannot see individually for this run (fiat backers behind the treasury). */
   extraBackers?: (runId: string) => number;
+  /** Bots fill the empty seats (CROWD=0 turns them off). */
+  bots?: boolean;
+  /** Display name for an address (falls back to the short address). */
+  nameOf?: (address: string) => string;
 }
 
 export class RunManager {
@@ -43,9 +48,15 @@ export class RunManager {
       oracleUrl: this.o.oracleUrl(runId), cfg: this.o.cfg, seed,
       extraBackers: () => this.o.extraBackers?.(runId) ?? 0,
     });
-    const run: Run = { id: runId, key: apiKey, match, chain, events: [], history: [], seq: 0, startedAt: Date.now() };
+    const run: Run = { id: runId, key: apiKey, match, chain, room: new Room(this.o.bots ?? false), events: [], history: [], seq: 0, startedAt: Date.now() };
     match.on("feed", (e: FeedEvent) => {
       const t = Date.now();
+      // Seats idle for 10 turns (no plant, no authenticated poll) are freed; counted in turns, never wall-clock.
+      if (e.type === "action") {
+        for (const s of run.room.sweep(e.turn + 1)) {
+          queueMicrotask(() => this.announce(run, { type: "seat", action: "idle", seat: s.no, address: s.address, turn: e.turn + 1, detail: `${this.nameOf(s.address)}'s seat was freed after ${10} quiet turns.` }));
+        }
+      }
       if (e.type === "state") {
         // One snapshot per event seq (the last state after that event wins); this is what the delayed feed serves.
         const last = run.history.at(-1);
@@ -64,6 +75,19 @@ export class RunManager {
   }
 
   get(runId: string): Run | undefined { return this.runs.get(runId); }
+
+  nameOf(address: string): string { return this.o.nameOf?.(address) ?? (address.length <= 10 ? address : `${address.slice(0, 4)}…${address.slice(-4)}`); }
+  /** Push a server-made event (seat changes) into the run's feed. */
+  announce(run: Run, e: FeedEvent) { run.match.emit("feed", e); }
+
+  /** Live public rooms for the lobby, in quick-play order: most people first, then newest. */
+  listRooms(): Run[] {
+    return [...this.runs.values()]
+      .filter((r) => !r.match.finished() && !r.room.private)
+      .sort((a, b) => (b.room.humans().length - a.room.humans().length) || (b.startedAt - a.startedAt));
+  }
+  /** Quick play: the first live public room with a free seat. */
+  quickPick(): Run | undefined { return this.listRooms().find((r) => r.room.freeCount() > 0); }
 
   /** Constant-time key check against the `Authorization: Bearer …` header. */
   authorized(run: Run, authorization: string | undefined): boolean {

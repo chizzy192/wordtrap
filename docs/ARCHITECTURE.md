@@ -206,6 +206,28 @@ repo documents no server-side payment lookup or session-verification endpoint. `
 both behind `POLLAR_PAYMENT_PATH` and `POLLAR_SESSION_PATH`; confirm them before any real money.
 Webhooks are not built on purpose (Pollar lists them as upcoming); verification is pull-based.
 
+## Rooms and seats
+
+One room per run with four seats (`apps/server/src/rooms.ts`). A seat is a server-side record:
+taking one returns a seat number and a token, and `plant-fiat` is refused without a valid token for
+the caller; backing needs no seat. Bots fill the empty seats, one per seat, and step aside when a
+person sits down. A seat with no plant and no authenticated poll for 10 turns is freed and the feed
+says so. The first person seated is the host and can make the room private, which hides it from the
+lobby and from quick play. **Seats are enforced by the server, not on-chain:** the program only sees
+the treasury planting, and it would accept a plant from anyone who signs it.
+
+## Planning ahead and the delayed board
+
+The spectator board runs `SPECTATE_DELAY_SECONDS` behind the game so it keeps pace with Byte's
+narration, and a mine only arms the turn after it is planted. So the planter aims at the future:
+hands are planned per tile (`Match.planHand`, memoised so the preview is exactly what gets dealt)
+and the state carries `nextHand` and `laterHand`. `GET /runs/:id/picker` is an undelayed read that
+lists only which cards exist on this, the next and the later tile, never played words, hints or
+traps, so it cannot leak a move the board has not shown. Each tile has one safe card (first sideways
+card in the hand): reveals on it are refused, so Byte always has an out. Bots plant a third of their
+mines on the coming hands. `POST /runs/:id/plant-fiat-batch` arms several cards in one action and
+returns the undelayed turn for the "Live from turn N. Byte is on turn M." line.
+
 ## Status
 
 The refactor landed on Nov 25: `engine.ts`, `agent.ts`, the websocket feed and the wall-clock fuse

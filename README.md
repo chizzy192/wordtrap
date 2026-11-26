@@ -69,6 +69,11 @@ Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) 
 | `POST /api/v1/runs/:id/play` `{ "word": "...", "turn"?: n }` | Bearer | full state (400 bad word, 409 stale turn, both with `state`) |
 | `POST /api/v1/runs/:id/hint` · `/challenge` `{ "word" }` · `/defuse` · `/pass` | Bearer | full state |
 | `GET /runs/:id/spectate?after=seq` | public | `{ seq, events, state }` for the watch page and phone |
+| `GET /runs/:id/picker` | public | Undelayed "cards you can mine": the prompt, cards and safe card of this, the next and the later tile. Never played words, hints or traps. |
+| `POST /runs/:id/seat` `{ action: "take" \| "leave" }` | identity | Four seats per room. Taking returns `{ seat, token }`; a fifth person gets 409. `plant-fiat` needs the token in `x-seat-token`. Seats idle for 10 turns are freed. |
+| `POST /runs/:id/room` `{ private }` | host | The first person seated is the host; private rooms are hidden from the lobby and quick play. |
+| `GET /api/v1/rooms` · `POST /api/v1/rooms/quick` | public · identity | Live public rooms (most people first, then newest); quick play seats you in the first one with a free seat. |
+| `POST /runs/:id/plant-fiat-batch` `{ items: [{ commitmentHex, stake }] }` | identity | Arm several cards in one action from the player's balance. Returns per-item results and the undelayed turn. |
 | `GET /watch/:id` | public | the spectator page, with a `frame-ancestors` CSP header |
 | `GET /api/v1/spec` | public | `byte.game.json` |
 

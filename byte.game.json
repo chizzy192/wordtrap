@@ -12,7 +12,7 @@
     "actions": [
       {
         "name": "play_word",
-        "description": "Play one word card from state.hand onto the current tile. Clearing a tile needs state.tiles[position].needed words. If the word is secretly mined and the mine is armed, it detonates: -22 fuse and the trapper gets paid. Costs 5 fuse.",
+        "description": "Play one word card from state.hand onto the current tile. Clearing a tile needs state.tiles[position].needed words. If the word is secretly mined and the mine is armed, it detonates: -22 fuse once per word however many mines fire on it, and every trapper gets paid. state.safeCard is the one card on this tile that cannot be mined (playing it is safe and still counts). After two detonations a tile is shielded (state.shielded): no more mines fire there until it is cleared. state.nextHand shows the next tile's cards and state.nextSafeCard its safe card: visible, not playable yet. Costs 5 fuse.",
         "method": "POST",
         "path": "/api/v1/runs/{{runId}}/play",
         "body": { "word": "{{word}}" },
@@ -55,6 +55,6 @@
       "win": { "path": "status", "equals": ["escaped"] },
       "score": { "path": "score", "label": "FUSE SCORE" }
     },
-      "watchUrl": "https://wordtrap.onrender.com/watch/{{runId}}"
+    "watchUrl": "https://wordtrap.onrender.com/watch/{{runId}}?theme=dark"
   }
 }

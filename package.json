@@ -14,7 +14,7 @@
     "sim:once": "cross-env SIM=1 FAST=1 ONE_MATCH=1 node apps/server/src/main.ts",
     "trace": "node scripts/trace.ts 30",
     "program:test": "cargo test -p wordtrap",
-    "test": "node --test \"packages/shared/test/*.test.ts\" \"apps/server/test/*.test.ts\"",
+    "test": "node --test --test-timeout=30000 \"packages/shared/test/*.test.ts\" \"apps/server/test/*.test.ts\"",
     "stake:build": "npm run build -w apps/stake"
   },
   "engines": {

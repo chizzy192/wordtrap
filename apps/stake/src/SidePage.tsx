@@ -155,14 +155,19 @@ export function Side({ mode }: { mode: Mode }) {
     if (!signedIn) { pending.current = "seat"; return setPop("first"); }
     if (!id.displayName) { pending.current = "seat"; return setPop("name"); }
     setBusy(true);
-    try { await fetch(`${SERVER}/runs/${runId}/seat`, { method: "POST", headers: id.headers(), body: JSON.stringify({ action: "take", ...(mode === "demo" ? { user: id.user } : {}) }) }); } catch { /* seats may not exist on this server yet */ }
+    try {
+      const r = await fetch(`${SERVER}/runs/${runId}/seat`, { method: "POST", headers: id.headers(), body: JSON.stringify({ action: "take", ...(mode === "demo" ? { user: id.user } : {}) }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg(j.error ?? "Could not take a seat."); setBusy(false); return; }   // e.g. "All four seats are taken. You can still back Byte."
+      try { localStorage.setItem(`wt.seat.${runId}`, j.token); } catch { /* private mode */ }    // the watch page planter sends this token
+    } catch { setMsg("The server didn't answer. Try again in a moment."); setBusy(false); return; }
     location.href = `/watch/${runId}?plant=1`;
   }
   const toggleTheme = () => { const n = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; document.documentElement.setAttribute("data-theme", n); try { localStorage.setItem("wt.theme", n); } catch { /* private */ } forceRender((x) => x + 1); };
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
 
   const seats: any[] = state?.seats ?? [{ kind: "open" }, { kind: "open" }, { kind: "open" }, { kind: "open" }];
-  const free = seats.filter((s) => s.kind === "open").length;
+  const free = seats.filter((s) => s.kind === "open" || s.kind === "bot").length;   // bots step aside for people
   const armed = state ? state.traps.filter((t: any) => t.status === "armed") : [];
   const armedStake = armed.reduce((n: number, t: any) => n + t.stake, 0);
   const hasPosition = !!pos && pos.stakeMicro > 0;

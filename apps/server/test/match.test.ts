@@ -39,7 +39,7 @@ test("(a) a mine on a hand word detonates when played one turn later: -22-5 fuse
   assert.equal(s.turn, 1);
   assert.ok(s.hand.length >= 8 && s.hand.length <= 10);
 
-  const word = s.hand[0];
+  const word = s.hand.find((w) => w !== s.safeCard)!;   // the safe card can never be mined
   const t = await plant(chain, word, "bob", 1);           // armed from turn 2
   assert.equal(t.armedTurn, 2);
   // Behaves like the setter's phone / the sim crowd: reveal synchronously once the word is played.
@@ -143,7 +143,7 @@ test("stacked mines on one word fire in one wave and emit multi_boom", async () 
   const feed: FeedEvent[] = [];
   m.on("feed", (e: FeedEvent) => feed.push(e));
   let s = await m.start();
-  const word = s.hand[0];
+  const word = s.hand.find((w) => w !== s.safeCard)!;
   const t1 = await plant(chain, word, "bob", 1);
   const t2 = await plant(chain, word, "carol", 0.5);
   m.afterWords.push(async (words) => {
@@ -154,11 +154,11 @@ test("stacked mines on one word fire in one wave and emit multi_boom", async () 
   s = await m.act("pass_turn");
   const before = s.fuse;
   s = await m.act("play_word", { word });
-  assert.equal(s.fuse, before - 5 - 22 - 22);
+  assert.equal(s.fuse, before - 5 - 22, "one fuse penalty per played word, however many mines fire");
   const multi = feed.find((e) => e.type === "multi_boom") as Extract<FeedEvent, { type: "multi_boom" }>;
   assert.ok(multi, "multi_boom emitted");
   assert.equal(multi.count, 2);
-  assert.equal(multi.fuseBurn, 44);
+  assert.equal(multi.fuseBurn, 22);
   assert.equal(multi.payout, 3 + 1.5);
   assert.deepEqual(multi.setters.sort(), ["bob", "carol"]);
   assert.equal(feed.filter((e) => e.type === "trap_fired").length, 2);

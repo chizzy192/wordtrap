@@ -47,19 +47,21 @@ export class SolanaChain implements Chain {
       .initializeMatch(new anchor.BN(this.matchId.toString()), 30_000, new anchor.BN(120), new anchor.BN(50_000))
       .accountsPartial({ authority: auth, game: this.game, mint: this.mint, vault: this.vault })
       .rpc();
-    this.program.addEventListener("trapPlanted", (e: any) => {
+    // Anchor event callbacks run outside any request; a throw here would be an uncaught exception, so each is guarded.
+    const guard = (name: string, fn: (e: any) => void) => (e: any) => { try { fn(e); } catch (err) { console.error(`[solana] ${name} listener failed:`, (err as Error).stack ?? err); } };
+    this.program.addEventListener("trapPlanted", guard("trapPlanted", (e: any) => {
       if (!e.game.equals(this.game)) return;
       const t: ChainTrap = { id: e.trap.toBase58(), setter: "", stake: e.stake.toNumber() / USDC, armedTurn: e.armedTurn, status: "armed" };
       this.traps.set(t.id, t); this.plantedCbs.forEach((cb) => cb(t));
-    });
-    this.program.addEventListener("backed", (e: any) => { if (e.game.equals(this.game)) { this.backerTotal += e.amount.toNumber() / USDC; this.backerKeys.add(String(e.user ?? e.backer ?? this.backerKeys.size)); } });
-    this.program.addEventListener("trapFired", (e: any) => {
+    }));
+    this.program.addEventListener("backed", guard("backed", (e: any) => { if (e.game.equals(this.game)) { this.backerTotal += e.amount.toNumber() / USDC; this.backerKeys.add(String(e.user ?? e.backer ?? this.backerKeys.size)); } }));
+    this.program.addEventListener("trapFired", guard("trapFired", (e: any) => {
       if (!e.game.equals(this.game)) return;
       const t = this.traps.get(e.trap.toBase58());
       if (!t) return;
       t.status = "fired"; t.word = e.word;
       this.firedCbs.forEach((cb) => cb({ trap: t, word: e.word, payout: e.payout.toNumber() / USDC, turn: e.turn }));
-    });
+    }));
   }
 
   address() { return this.game?.toBase58(); }

@@ -107,6 +107,14 @@ export interface BoardState {
   position: number;          // tile index Byte stands on
   tiles: { prompt: string; cleared: boolean; needed: number; played: string[] }[];
   hand: string[];            // word cards Byte may play on the current tile
+  safe?: string | null;      // alias of safeCard (older readers)
+  safeCard?: string | null;  // the one card on this tile that cannot be mined: playing it is never recorded as spoken
+  shielded?: boolean;        // two mines went off on this tile: no more detonations until it is cleared
+  // Hands are planned ahead so viewers can mine the coming tiles. Visible to Byte, not playable yet.
+  nextHand?: { prompt: string; hand: string[]; safe: string | null } | null;
+  nextSafeCard?: string | null;
+  nextPrompt?: string | null;
+  laterHand?: { prompt: string; hand: string[]; safe: string | null } | null;
   fuse: number;              // remaining fuse units
   fuseTotal: number;
   hint: Record<string, number> | null; // word -> mine risk 0..1, from the last buy_hint
@@ -135,4 +143,6 @@ export type FeedEvent =
   | { type: "trap_fired"; trap: TrapView; payout: number; fuseBurn: number }
   /** Two or more mines fired on the same word in one reveal wave (stacked mines = one big boom). */
   | { type: "multi_boom"; word: string; count: number; payout: number; fuseBurn: number; setters: string[]; turn: number }
+  /** A seat changed hands: taken, left, or freed after quiet turns. `detail` is the sentence for the log. */
+  | { type: "seat"; detail: string; turn: number; seat: number; address?: string; action: "take" | "leave" | "idle" }
   | { type: "match_end"; status: MatchStatus; reason: string };

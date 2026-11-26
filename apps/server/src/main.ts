@@ -21,12 +21,25 @@ import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
 import { FiatLedger, FiatError, MockPollar, confirmPayment, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway } from "./fiat.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
-import { MemoryProfileStore, validateName, type ProfileStore } from "./profiles.ts";
+import { MemoryProfileStore, validateName, shortAddress, type ProfileStore } from "./profiles.ts";
+import { RoomError } from "./rooms.ts";
 
 const WATCH_HTML = fileURLToPath(new URL("../../watch/index.html", import.meta.url));
 const SPEC_JSON = fileURLToPath(new URL("../../../byte.game.json", import.meta.url));
 /** Real response header (a <meta> tag does not work): lets app.bytearena.fun iframe the watch page. */
 export const FRAME_CSP = "frame-ancestors 'self' https://app.bytearena.fun";
+
+/**
+ * Last line of defence: an unhandled rejection or uncaught exception anywhere (a bot, a timer, a
+ * self-fetch) is logged with its stack and the server keeps serving. Every known path is caught
+ * closer to the source; this exists so an unknown one never takes a live run down.
+ */
+export function installProcessGuards(log: (...a: unknown[]) => void = console.error) {
+  if ((process as any).__wordtrapGuards) return;
+  (process as any).__wordtrapGuards = true;
+  process.on("unhandledRejection", (reason) => log("[process] unhandled rejection (server keeps running):", (reason as Error)?.stack ?? reason));
+  process.on("uncaughtException", (err) => log("[process] uncaught exception (server keeps running):", err?.stack ?? err));
+}
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, OPTIONS" };
 
 const ACTION_ROUTES: Record<string, string> = { play: "play_word", hint: "buy_hint", defuse: "defuse_tile", challenge: "challenge_word", pass: "pass_turn" };
@@ -53,6 +66,8 @@ export interface AppOptions {
   profiles?: ProfileStore;
   /** Test funds a new guest is credited once (env GUEST_START_FUNDS, default 10). Mock chain only. */
   guestStartFunds?: number;
+  /** Bots sit in empty seats and plant (needs `crowd`). Default: same as `crowd`. */
+  bots?: boolean;
 }
 
 export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
@@ -70,7 +85,14 @@ function json(res: ServerResponse, code: number, body: unknown) {
   res.writeHead(code, { "content-type": "application/json", ...CORS });
   res.end(JSON.stringify(body));
 }
-const readBody = (req: IncomingMessage) => new Promise<string>((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => r(b)); });
+/** Reads the body; a client that disconnects mid-request settles the promise instead of leaving the handler hanging. */
+const readBody = (req: IncomingMessage) => new Promise<string>((resolve, reject) => {
+  let b = "";
+  req.on("data", (c) => (b += c));
+  req.on("end", () => resolve(b));
+  req.on("error", (e) => reject(new Error(`client disconnected: ${e.message}`)));
+  req.on("close", () => { if (!req.complete) reject(new Error("client disconnected before the request finished")); });
+});
 async function readJson(req: IncomingMessage): Promise<Record<string, any>> {
   const raw = await readBody(req);
   if (!raw.trim()) return {};
@@ -93,24 +115,36 @@ export function createApp(o: AppOptions = {}): App {
   const ledger = new FiatLedger(o.ledgerPath === undefined ? (process.env.FIAT_LEDGER_PATH ?? LEDGER_DEFAULT) : o.ledgerPath);
   const pollar = o.pollar ?? pollarFromEnv();
 
+  const crowdOn = !!(o.sim || o.crowd);
+  const nameCache = new Map<string, string>();        // address -> display name, filled as profiles are read or written
   const runs = new RunManager({
     makeChain,
     cfg: o.cfg,
     oracleUrl: (id) => `http://127.0.0.1:${port}/oracle/risk?run=${id}`,
     extraBackers: (id) => Object.keys(ledger.backersOf(id)).length,
+    bots: o.bots ?? crowdOn,
+    nameOf: (a) => nameCache.get(a) ?? shortAddress(a),
     onRun: (run: Run) => {
       // Fiat mines: when the treasury's trap fires, pay the viewer who owns it (idempotent per trap).
-      run.chain.onTrapFired((e) => { if (ledger.trapOwner(e.trap.id)) ledger.payTrap(e.trap.id, Math.round(e.payout * MICRO)); });
+      run.chain.onTrapFired((e) => {
+        // runs inside the chain's event emit; a ledger write failure (disk full, bad file) must not break the reveal
+        try { if (ledger.trapOwner(e.trap.id)) ledger.payTrap(e.trap.id, Math.round(e.payout * MICRO)); }
+        catch (err) { console.error(`[fiat] could not credit trap ${e.trap.id}:`, (err as Error).stack ?? err); }
+      });
       const crowd = o.sim ? (o.crowd === false || o.crowd === undefined ? true : o.crowd) : o.crowd;
       if (!crowd) return;
       if (!(run.chain instanceof MockChain)) return;          // CROWD is a no-op on a real chain
-      startCrowd(run.match, run.chain, crowd === true ? {} : crowd);
+      // four seats: one bot per empty seat, re-evaluated every turn as people sit down and leave
+      startCrowd(run.match, run.chain, { setters: 4, ...(crowd === true ? {} : crowd), setterCount: () => run.room.botCount() });
     },
   });
 
   // Pending Pollar payments (gateway unreachable / still processing) are re-verified in the background.
   const retry = setInterval(async () => {
-    for (const { id, user } of ledger.pendingPayments()) { try { await confirmPayment(ledger, pollar, id, user); } catch { /* keep pending */ } }
+    for (const { id, user } of ledger.pendingPayments()) {
+      try { await confirmPayment(ledger, pollar, id, user); }
+      catch (e) { console.warn(`[fiat] pending payment ${id} still unverified:`, (e as Error).message); }   // stays pending, never credited
+    }
   }, 30_000);
   retry.unref();
 
@@ -212,12 +246,14 @@ export function createApp(o: AppOptions = {}): App {
         const address = await identify(req, b);           // the wallet address / guest id is the identity
         if (req.method === "GET") {
           const prof = await profiles.get(address);
+          if (prof?.name) nameCache.set(address, prof.name);
           return json(res, 200, { address, name: prof?.name ?? null, hasName: !!prof?.name });
         }
         if (req.method === "PUT" || req.method === "POST") {
           const v = validateName(b.name);
           if (!v.ok) return json(res, 400, { error: v.error });
           const prof = await profiles.put(address, v.name);
+          nameCache.set(address, prof.name!);
           return json(res, 200, { address, name: prof.name, hasName: true });
         }
         return json(res, 405, { error: "GET or PUT" });
@@ -250,6 +286,79 @@ export function createApp(o: AppOptions = {}): App {
         (pollar as MockPollar).register(paymentId, user, micro);     // the "payment" the gateway will verify
         const r = await confirmPayment(ledger, pollar, paymentId, user);
         return json(res, 200, { paymentId, ...r, ...bal(user) });
+      }
+      // ---- rooms and seats (server-enforced; the program knows nothing about seats) ----
+      if (p === "/api/v1/rooms" && req.method === "GET") {
+        return json(res, 200, runs.listRooms().map((r) => { const s = r.match.snapshot(); return { runId: r.id, code: r.id, byte: s.callsign ?? "Byte", turn: s.turn, fuse: s.fuse, fuseTotal: s.fuseTotal, seats: r.room.view(null, {}).map((v) => v.kind), people: r.room.humans().length }; }));
+      }
+      if (p === "/api/v1/rooms/quick" && req.method === "POST") {
+        const b = await readJson(req);
+        const user = await identify(req, b);
+        const run = runs.quickPick();
+        if (!run) return json(res, 404, { error: "No room has a free seat right now. A room opens when a Byte agent starts a run." });
+        const seat = run.room.take(user, run.match.snapshot().turn);
+        runs.announce(run, { type: "seat", action: "take", seat: seat.no, address: user, turn: run.match.snapshot().turn, detail: `${runs.nameOf(user)} took seat ${seat.no}.` });
+        return json(res, 200, { runId: run.id, code: run.id, seat: seat.no, token: seat.token });
+      }
+      const rs = /^\/runs\/([^/]+)\/(seat|room)$/.exec(p);
+      if (rs && req.method === "POST") {
+        const run = runs.get(rs[1]);
+        if (!run) return json(res, 404, { error: `unknown run ${rs[1]}` });
+        const b = await readJson(req);
+        const user = await identify(req, b);
+        const turn = run.match.snapshot().turn;
+        if (rs[2] === "room") {
+          run.room.setPrivate(user, !!b.private);
+          return json(res, 200, { runId: run.id, private: run.room.private, host: run.room.host === user });
+        }
+        if (b.action === "leave") {
+          const left = run.room.leave(user);
+          if (left) runs.announce(run, { type: "seat", action: "leave", seat: left.no, address: user, turn, detail: `${runs.nameOf(user)} left seat ${left.no}.` });
+          return json(res, 200, { runId: run.id, seat: null, seats: run.room.view(user, Object.fromEntries(nameCache)) });
+        }
+        if (run.match.finished()) return json(res, 409, { error: "This run is over. Find another room." });
+        const had = run.room.seatOf(user);
+        const seat = run.room.take(user, turn);                     // 409 with a clear sentence when all four are taken
+        if (!had) runs.announce(run, { type: "seat", action: "take", seat: seat.no, address: user, turn, detail: `${runs.nameOf(user)} took seat ${seat.no}.` });
+        return json(res, 200, { runId: run.id, seat: seat.no, token: seat.token, host: run.room.host === user, seats: run.room.view(user, Object.fromEntries(nameCache)) });
+      }
+
+      // Undelayed picker for seated players: which cards exist on this, the next and the later tile. Never played words, hints or traps.
+      const pk = /^\/runs\/([^/]+)\/picker$/.exec(p);
+      if (pk && req.method === "GET") {
+        const run = runs.get(pk[1]);
+        if (!run) return json(res, 404, { error: `unknown run ${pk[1]}` });
+        if (req.headers["x-user"] || req.headers.authorization) { try { run.room.touch(await identify(req, {}), run.match.snapshot().turn); } catch { /* unauthenticated read is fine */ } }
+        return json(res, 200, run.match.picker());
+      }
+      // Arm several cards in one action: [{ commitmentHex, stake }], each debited from the identity's balance.
+      const pb = /^\/runs\/([^/]+)\/plant-fiat-batch$/.exec(p);
+      if (pb && req.method === "POST") {
+        const run = runs.get(pb[1]);
+        if (!run) return json(res, 404, { error: `unknown run ${pb[1]}` });
+        if (!run.chain.plantTrap) return json(res, 400, { error: "chain cannot plant from the server" });
+        const b = await readJson(req);
+        const user = await identify(req, b);
+        const items = Array.isArray(b.items) ? b.items.slice(0, 10) : [];
+        if (!items.length) throw new FiatError("items required: [{ commitmentHex, stake }]", 400);
+        const seat = run.room.check(user, String(req.headers["x-seat-token"] ?? b.seatToken ?? ""));   // only seated players plant
+        seat.lastActiveTurn = Math.max(seat.lastActiveTurn, run.match.snapshot().turn);
+        const treasury = run.chain.treasury();
+        const results: any[] = [];
+        for (const it of items) {
+          const commitmentHex = String(it.commitmentHex ?? "").toLowerCase();
+          try {
+            if (!/^[0-9a-f]{64}$/.test(commitmentHex)) throw new FiatError("commitmentHex must be 32 bytes hex", 400);
+            const micro = toMicro(Number(it.stake ?? 0));
+            ledger.debit(user, micro, "plant mine", commitmentHex.slice(0, 16));
+            let trap;
+            try { trap = await run.chain.plantTrap({ commitmentHex, stake: fromMicro(micro), setter: treasury.setter }); }
+            catch (e) { ledger.credit(user, micro, "plant refund", commitmentHex.slice(0, 16)); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
+            ledger.ownTrap(trap.id, { user, runId: run.id, stake: micro });
+            results.push({ ok: true, trap });
+          } catch (e) { results.push({ ok: false, error: (e as Error).message }); }
+        }
+        return json(res, 200, { results, turn: run.match.snapshot().turn, ...bal(user) });
       }
       // A signed-in backer's position: stake, share of the pool, and the payout if the run ended now (proRata, like the program).
       const mp = /^\/runs\/([^/]+)\/my-position$/.exec(p);
@@ -296,6 +405,8 @@ export function createApp(o: AppOptions = {}): App {
         const user = await identify(req, b);
         if (fp[2] === "plant-fiat") {
           if (!chain.plantTrap) return json(res, 400, { error: "chain cannot plant from the server" });
+          const seat = run.room.check(user, String(req.headers["x-seat-token"] ?? b.seatToken ?? ""));   // only seated players plant
+          seat.lastActiveTurn = Math.max(seat.lastActiveTurn, run.match.snapshot().turn);
           const commitmentHex = String(b.commitmentHex ?? "").toLowerCase();
           if (!/^[0-9a-f]{64}$/.test(commitmentHex)) throw new FiatError("commitmentHex must be 32 bytes hex (sha256 of wordtrap:v1|word|salt|TREASURY pubkey)", 400);
           const micro = toMicro(Number(b.stake ?? 0));
@@ -304,7 +415,7 @@ export function createApp(o: AppOptions = {}): App {
           try { trap = await chain.plantTrap({ commitmentHex, stake: fromMicro(micro), setter: treasury.setter }); }
           catch (e) { ledger.credit(user, micro, "plant refund", commitmentHex.slice(0, 16)); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
           ledger.ownTrap(trap.id, { user, runId: run.id, stake: micro });
-          return json(res, 200, { trap, ...bal(user) });
+          return json(res, 200, { trap, turn: run.match.snapshot().turn, ...bal(user) });   // turn: the undelayed truth for "Live from turn N. Byte is on turn M."
         }
         if (fp[2] === "back-fiat") {
           if (!chain.backByte) return json(res, 400, { error: "chain cannot back from the server" });
@@ -329,6 +440,8 @@ export function createApp(o: AppOptions = {}): App {
         if (!isMineable(word) || !/^[0-9a-f]{64}$/.test(saltHex)) throw new FiatError("word (mineable) and saltHex (32 bytes) required", 400);
         const expect = chain.trapCommitment?.(trapId);
         if (expect && toHex(commitment(word, fromHex(saltHex), treasury.pubkey)) !== expect) throw new FiatError("bad reveal: word or salt does not match this mine's commitment", 400);
+        if (run.match.isSafeWord(word)) throw new FiatError(`"${word}" is the safe card on its tile. Mines on it never fire.`, 400);
+        if (run.match.isShielded()) throw new FiatError("This tile is shielded: two mines already went off here. Your mine stays armed for later.", 409);
         let fired;
         try { fired = await chain.revealTrap({ trapId, word, saltHex, setter: treasury.setter }); }
         catch (e) { throw new FiatError(`reveal rejected: ${(e as Error).message}`, 400); }
@@ -345,15 +458,27 @@ export function createApp(o: AppOptions = {}): App {
           const raw = url.searchParams.get("delay");
           const delay = raw === null || raw === "" || !Number.isFinite(Number(raw)) ? spectateDelay : Number(raw);
           const feed = runs.spectate(run, Number(url.searchParams.get("after") ?? 0), delay, url.searchParams.get("paced") === "1");
-          // display names for every player on the board (setters, fiat backers); the page shows short addresses for the rest
-          const ids = new Set<string>([...feed.state.traps.map((t) => t.setter), ...Object.keys(ledger.backersOf(run.id))]);
-          return json(res, 200, { ...feed, players: await profiles.names(ids) });
+          // an authenticated poll counts as activity for the viewer's seat (idle seats are freed after 10 quiet turns)
+          let viewer: string | null = null;
+          if (req.headers["x-user"] || req.headers.authorization) { try { viewer = await identify(req, {}); run.room.touch(viewer, run.match.snapshot().turn); } catch { viewer = null; } }
+          // display names for every player on the board (setters, fiat backers, seats); the page shows short addresses for the rest
+          const ids = new Set<string>([...feed.state.traps.map((t) => t.setter), ...Object.keys(ledger.backersOf(run.id)), ...run.room.humans().map((s) => s.address)]);
+          const players = await profiles.names(ids);
+          for (const [a, n] of Object.entries(players)) nameCache.set(a, n);
+          const seats = run.room.view(viewer, players);
+          const roomFields = { seats, host: run.room.host, private: run.room.private, room: { code: run.id, host: viewer !== null && run.room.host === viewer, private: run.room.private } };
+          const state = { ...feed.state, ...roomFields };
+          // paced events carry their own board snapshot; the room is not part of the board's history, so attach it to each
+          const events = feed.events.map((e: any) => (e.state ? { ...e, state: { ...e.state, ...roomFields } } : e));
+          return json(res, 200, { ...feed, events, state, players });
         }
         // Mock-only viewer endpoints (production: viewers sign on-chain txs from mobile/Pollar).
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });
         if (run.chain.kind !== "mock") return json(res, 400, { error: "sign on-chain from the client in solana mode" });
         const b = await readJson(req);
-        if (sp[2] === "plant") return json(res, 200, await run.chain.plantTrap!(b as any));
+        if (sp[2] === "plant") return json(res, 200, { ...(await run.chain.plantTrap!(b as any)), turn: run.match.snapshot().turn });
+        if (run.match.isSafeWord(normalizeWord(String(b.word ?? "")))) return json(res, 400, { error: `"${b.word}" is the safe card on its tile. Mines on it never fire.` });
+        if (run.match.isShielded()) return json(res, 409, { error: "This tile is shielded: two mines already went off here." });
         return json(res, 200, await run.chain.revealTrap!(b as any));
       }
       if (p === "/suggest") {
@@ -373,7 +498,7 @@ export function createApp(o: AppOptions = {}): App {
       }
       json(res, 404, { error: "not found" });
     } catch (e) {
-      json(res, e instanceof FiatError ? e.code : 400, { error: (e as Error).message });
+      json(res, e instanceof FiatError || e instanceof RoomError ? e.code : 400, { error: (e as Error).message });
     }
   });
 
@@ -397,7 +522,12 @@ export async function playRunOverHttp(base: string, o: { callsign: string; delay
   while (state.status === "live") {
     const mv = decide(state);
     const route = Object.entries(ACTION_ROUTES).find(([, a]) => a === mv.action)![0];
-    const r = await fetch(`${base}/api/v1/runs/${runId}/${route}`, { method: "POST", headers, body: JSON.stringify({ word: mv.word, turn: state.turn }) });
+    let r: Response | null = null;
+    for (let attempt = 0; attempt < 5 && !r; attempt++) {      // a dropped connection to our own server must not end the run
+      try { r = await fetch(`${base}/api/v1/runs/${runId}/${route}`, { method: "POST", headers, body: JSON.stringify({ word: mv.word, turn: state.turn }) }); }
+      catch (e) { log(`  fetch failed (${(e as Error).message}), retrying`); await new Promise((res) => setTimeout(res, 500 * (attempt + 1))); }
+    }
+    if (!r) { log("  giving up on this move"); continue; }
     const body = await r.json();
     if (!r.ok) { log(`  ${r.status} ${body.error}`); state = body.state ?? (await fetch(`${base}/api/v1/runs/${runId}/state`, { headers }).then((x) => x.json())); continue; }
     state = body;
@@ -410,9 +540,11 @@ export async function playRunOverHttp(base: string, o: { callsign: string; delay
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
+  installProcessGuards();
   const PORT = Number(process.env.PORT ?? 8787);
   const SIM = process.env.SIM === "1";
-  const CROWD = SIM || process.env.CROWD === "1";
+  // Bots fill the empty seats by default; CROWD=0 turns them off. (SIM=1 adds the self-play driver.)
+  const CROWD = SIM || process.env.CROWD !== "0";
   const FAST = process.env.FAST === "1";
   const crowd = crowdFromEnv();
   if (CROWD && process.env.CHAIN === "solana") console.warn("CROWD/SIM: simulated viewers only work on the mock chain; CHAIN=solana → crowd disabled");
@@ -425,7 +557,9 @@ if (isMain) {
   if (SIM) {
     const base = `http://127.0.0.1:${port}`;
     for (;;) {
-      const { state } = await playRunOverHttp(base, { callsign: "sim-byte", delayMs: FAST ? 600 : 2500, log: console.log });
+      let state: any;
+      try { ({ state } = await playRunOverHttp(base, { callsign: "sim-byte", delayMs: FAST ? 600 : 2500, log: console.log })); }
+      catch (e) { console.error("sim run failed, starting another:", (e as Error).message); await new Promise((r) => setTimeout(r, 2000)); continue; }
       const fired = state.traps.filter((t: any) => t.status === "fired").length;
       console.log(`[run ${state.matchId}] byte ${state.status.toUpperCase()} · turns ${state.turn} · fuse ${state.fuse} · score ${state.score} · mines fired ${fired}/${state.traps.length}`);
       if (process.env.ONE_MATCH === "1") process.exit(state.status === "escaped" ? 0 : 3);

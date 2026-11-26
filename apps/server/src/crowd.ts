@@ -20,12 +20,15 @@ export interface CrowdOptions {
   /** Total USDC the mock backers put behind Byte (spread across the setters). */
   backerUsd: number;
   rnd?: () => number;
+  /** How many bots plant this turn (one per empty seat). Defaults to `setters`. */
+  setterCount?: () => number;
 }
 // Tuned with scripts/trace.ts over 100 seeds (tune this, never the fuse costs):
 // survival 25–40%, mean detonations ≥ 2, zero-boom runs ≤ 10%.
 // Nov 25, 100 seeds × 2 seed sets at 0.11: survival 26–30%, 2.6–2.7 detonations/run, 5–8% zero-boom;
 // with NO_BLURT (smart Byte): survival 56–66%, 1.4–1.5 detonations/run, 16–27% zero-boom.
-export const CROWD_DEFAULTS: CrowdOptions = { setters: 5, aggression: 0.11, focus: 0.75, backerUsd: 20 };
+// Nov 26, 100 seeds under the safe-card, single-penalty and shield rules at 0.14: survival 36%, 2.7 detonations/run, 2% zero-boom.
+export const CROWD_DEFAULTS: CrowdOptions = { setters: 4, aggression: 0.14, focus: 0.75, backerUsd: 20 };   // four seats, one bot per empty seat
 
 /** CROWD_SETTERS / CROWD_AGGRESSION / CROWD_BACKER_USD env, falling back to the tuned defaults. */
 export function crowdFromEnv(env: NodeJS.ProcessEnv = process.env): CrowdOptions {
@@ -44,7 +47,8 @@ export function startCrowd(match: Match, chain: MockChain, opts: Partial<CrowdOp
   const secrets = new Map<string, { word: string; salt: Uint8Array; setter: string; armedTurn: number }>();
   const names = Array.from({ length: o.setters }, (_, i) => `viewer${i + 1}`);
   const backers = Math.max(1, o.setters);
-  for (let i = 0; i < backers; i++) chain.backByte(`backer${i + 1}`, +((o.backerUsd / backers) * (0.6 + (0.8 * i) / Math.max(1, backers - 1))).toFixed(2));
+  // not awaited by design (fire-and-forget at attach time), so the rejection must be caught here or it is unhandled
+  for (let i = 0; i < backers; i++) chain.backByte(`backer${i + 1}`, +((o.backerUsd / backers) * (0.6 + (0.8 * i) / Math.max(1, backers - 1))).toFixed(2)).catch((e) => console.error("[crowd] backer seed failed:", (e as Error).message));
 
   const pick = <T>(arr: T[]): T => arr[Math.floor(rnd() * arr.length)];
 
@@ -62,13 +66,21 @@ export function startCrowd(match: Match, chain: MockChain, opts: Partial<CrowdOp
     const habits = hand.filter((w) => (plays.get(w) ?? 0) >= 2);
     const justChallenged = state.challenged.filter((c) => c.turn >= state.turn - 1 && hand.includes(c.word)).map((c) => c.word);
 
-    for (const setter of names) {
+    // Bots plan ahead too: a third of their plants go on the next tile's hand, a few on the one after.
+    const ahead = [...(state.nextHand?.hand ?? []).filter((w) => w !== state.nextHand?.safe), ...(state.laterHand?.hand ?? []).filter((w) => w !== state.laterHand?.safe)];
+    const notSafe = (w: string) => w !== state.safe;
+    // bots fill the empty seats: when a person sits, one bot stops planting; when they leave, it returns
+    const active = names.slice(0, Math.max(0, Math.min(names.length, o.setterCount ? o.setterCount() : names.length)));
+    for (const setter of active) {
       if (rnd() > o.aggression) continue;
       let word: string;
-      if (focus.length && rnd() < o.focus) word = pick(focus);                    // stack the obvious card
-      else if (justChallenged.length && rnd() < 0.5) word = pick(justChallenged); // counter-mine after a challenge
-      else if (habits.length && rnd() < 0.5) word = pick(habits);                 // punish a habit
-      else word = pick(scatter);                                                   // scatter onto sideways cards
+      const r = rnd();
+      if (ahead.length && r < 0.35) word = pick(ahead);                                     // mine the coming tiles
+      else if (focus.filter(notSafe).length && r < 0.35 + o.focus * 0.65) word = pick(focus.filter(notSafe));   // stack the obvious card
+      else if (justChallenged.length && rnd() < 0.5) word = pick(justChallenged.filter(notSafe)); // counter-mine after a challenge
+      else if (habits.length && rnd() < 0.5) word = pick(habits.filter(notSafe));                 // punish a habit
+      else word = pick(scatter.filter(notSafe));                                                   // scatter onto sideways cards
+      if (!word) continue;
       const salt = randomBytes(32);
       const c = toHex(commitment(word, salt, mockKey(setter)));
       try {
@@ -82,6 +94,7 @@ export function startCrowd(match: Match, chain: MockChain, opts: Partial<CrowdOp
   // detonation(s) in the same response. Several mines on one word fire in one wave.
   match.afterWords.push(async (words) => {
     for (const [id, s] of secrets) {
+      if (match.isShielded()) return;                         // two detonations on this tile already: no more until it clears
       if (!words.includes(s.word) || chain.turn < s.armedTurn) continue;
       try {
         await chain.revealTrap({ trapId: id, word: s.word, saltHex: toHex(s.salt), setter: s.setter });
@@ -89,4 +102,9 @@ export function startCrowd(match: Match, chain: MockChain, opts: Partial<CrowdOp
       } catch { /* challenged / duplicate — keep waiting */ }
     }
   });
+  const everMined: string[] = [];
+  const origSet = secrets.set.bind(secrets);
+  secrets.set = (k, v) => { everMined.push(v.word); return origSet(k, v); };
+  /** For tests and tuning: every word the bots have mined so far (the bots' own secrets, never served to clients). */
+  return { mined: () => [...everMined] };
 }

@@ -56,6 +56,8 @@ export class Match extends EventEmitter {
   private readonly seed: number;
   private fired = new Set<string>();
   private wave: TrapFiredEvent[] = [];          // detonations during the current reveal wave
+  private burnedWords = new Set<string>();      // words that already cost fuse this action (one penalty per word)
+  private tileFired = 0;                        // detonations on the current tile (two → shielded)
   private windowArmed = { count: 0, stake: 0 };
   private busy = false;
 
@@ -73,7 +75,7 @@ export class Match extends EventEmitter {
     this.state = {
       matchId: o.matchId, callsign: o.callsign, treasury: toHex(this.chain.treasury().pubkey), status: "live", turn: 0, position: 0,
       tiles: this.tiles.map((t) => ({ prompt: t.prompt, cleared: false, needed: t.needed, played: [] })),
-      hand: [], fuse: this.cfg.fuse, fuseTotal: this.cfg.fuse, hint: null,
+      hand: [], safe: null, safeCard: null, shielded: false, nextHand: null, nextSafeCard: null, nextPrompt: null, laterHand: null, fuse: this.cfg.fuse, fuseTotal: this.cfg.fuse, hint: null,
       spoken: [], challenged: [], traps: [], backerTotal: 0, trapTotal: 0,
       defusesLeft: this.cfg.maxDefuses, hintsBought: 0, hintSpendUsd: 0, score: 0,
       backingOpen: true, backerCount: 0, bonusesPaid: 0, unfiredStake: 0, poolNow: 0,
@@ -84,6 +86,14 @@ export class Match extends EventEmitter {
       this.sync(); this.push({ type: "trap_planted", trap: t });
     });
     this.chain.onTrapFired((e) => this.onFired(e));
+  }
+
+  /** Hooks belong to viewers and bots; a failing hook must never fail Byte's move. Errors are logged, not swallowed silently. */
+  private async runHooks<T>(hooks: ((arg: T) => Promise<void>)[], arg: T, what: string) {
+    for (const h of hooks) {
+      try { await h(arg); }
+      catch (e) { console.error(`[match ${this.state.matchId}] ${what} hook failed:`, (e as Error).stack ?? e); }
+    }
   }
 
   // ---------- read side ----------
@@ -105,7 +115,7 @@ export class Match extends EventEmitter {
     this.state.matchPda = this.chain.address?.();
     this.sync();
     // Pre-start: viewers may plant now; those mines arm for turn 1.
-    for (const h of this.turnHooks) await h(this.snapshot());
+    await this.runHooks(this.turnHooks, this.snapshot(), "turn");
     await this.chain.startMatch();
     this.state.turn = 1;
     this.sync();
@@ -146,17 +156,18 @@ export class Match extends EventEmitter {
           throw new InvalidActionError(`"${params.word ?? ""}" is not in your hand; play one of: ${this.state.hand.join(", ")}`, this.snapshot());
         }
         this.burn(this.cfg.playCost);
-        await this.chain.recordWords([w], "spoken");
-        this.state.spoken.push({ word: w, turn });
+        const safe = w === this.state.safeCard;
+        // The safe card is never recorded on-chain as spoken, so no mine can ever fire on it; it still counts toward the tile.
+        if (!safe) { await this.chain.recordWords([w], "spoken"); this.state.spoken.push({ word: w, turn }); }
         const t = this.state.tiles[this.state.position];
         t.played.push(w);
         this.state.hand = this.state.hand.filter((x) => x !== w);
         // Let synchronous revealers (sim crowd, relayers) detonate before we answer.
-        this.wave = [];
-        for (const h of this.afterWords) await h([w]);
+        this.wave = []; this.burnedWords.clear();
+        if (!safe) await this.runHooks(this.afterWords, [w], "reveal");
         const wave = this.wave.filter((e) => e.word === w);
         if (wave.length >= 2) {
-          this.push({ type: "multi_boom", word: w, count: wave.length, payout: wave.reduce((n, e) => n + e.payout, 0), fuseBurn: wave.length * this.cfg.fireBurn, setters: wave.map((e) => e.trap.setter), turn });
+          this.push({ type: "multi_boom", word: w, count: wave.length, payout: wave.reduce((n, e) => n + e.payout, 0), fuseBurn: this.cfg.fireBurn, setters: wave.map((e) => e.trap.setter), turn });
         }
         const boom = wave.length >= 2 ? ` — MULTI-BOOM, ${wave.length} mines on it` : this.fired.has(w) ? " — BOOM, it was mined" : "";
         if (t.played.length >= t.needed) { this.clearTile(); return `played "${w}"${boom} · tile cleared`; }
@@ -188,6 +199,7 @@ export class Match extends EventEmitter {
         const w = normalizeWord(params.word ?? "");
         if (!isMineable(w)) throw new InvalidActionError(`"${params.word ?? ""}" cannot be challenged (3+ letters a-z, not a glue word); try a card from your hand: ${this.state.hand.join(", ")}`, this.snapshot());
         if (this.state.challenged.some((c) => c.word === w)) throw new InvalidActionError(`"${w}" was already challenged`, this.snapshot());
+        if (w === this.state.safeCard) throw new InvalidActionError(`"${w}" is the safe card: it cannot be mined, so there is nothing to challenge`, this.snapshot());
         this.burn(this.cfg.challengeCost);
         await this.chain.recordWords([w], "challenged");
         this.state.challenged.push({ word: w, turn });
@@ -214,7 +226,7 @@ export class Match extends EventEmitter {
       this.push({ type: "match_end", status, reason });
       return;
     }
-    for (const h of this.turnHooks) await h(this.snapshot());
+    await this.runHooks(this.turnHooks, this.snapshot(), "turn");
     this.sync();
   }
 
@@ -228,13 +240,56 @@ export class Match extends EventEmitter {
     this.state.tiles[this.state.position].cleared = true;
     this.state.position++;
     this.state.hint = null;        // scores were for the old hand
+    this.state.shielded = false;   // the shield is per tile
+    this.tileFired = 0;
     this.dealHand();
   }
 
+  /** Hands are planned ahead so viewers can mine the next tiles; the plan is what gets dealt. */
+  private readonly planned = new Map<number, { hand: string[]; safe: string | null }>();
+  planHand(position: number): { prompt: string; hand: string[]; safe: string | null } | null {
+    if (position < 0 || position >= this.tiles.length) return null;
+    const tile = this.tiles[position];
+    let plan = this.planned.get(position);
+    if (!plan) {
+      const extras = [...this.fired].slice(-2);   // words that already blew up come back as bait
+      const hand = handFor(tile, extras, this.seed + position * 7919);
+      // One safe card per tile: the first sideways card in the hand. Mines on it are refused, so Byte always has an out.
+      const safe = hand.find((w) => tile.sideways.includes(w)) ?? null;
+      plan = { hand, safe };
+      this.planned.set(position, plan);
+    }
+    return { prompt: tile.prompt, hand: [...plan.hand], safe: plan.safe };
+  }
   private dealHand() {
-    if (this.state.position >= this.tiles.length) { this.state.hand = []; return; }
-    const extras = [...this.fired].slice(-2);   // words that already blew up come back as bait
-    this.state.hand = handFor(this.currentTile(), extras, this.seed + this.state.position * 7919);
+    const plan = this.planHand(this.state.position);
+    this.state.hand = plan ? plan.hand : [];
+    this.state.safe = this.state.safeCard = plan?.safe ?? null;
+    this.state.nextHand = this.planHand(this.state.position + 1);
+    this.state.nextSafeCard = this.state.nextHand?.safe ?? null;
+    this.state.nextPrompt = this.state.nextHand?.prompt ?? null;
+    this.state.laterHand = this.planHand(this.state.position + 2);
+  }
+  /** Two detonations on a tile shield it: no more mines fire there until it is cleared. */
+  isShielded(): boolean { return !!this.state.shielded; }
+  /** Is this word the safe card of a tile Byte has not finished yet? Mines on it are refused. */
+  isSafeWord(word: string): boolean {
+    for (let p = this.state.position; p < Math.min(this.tiles.length, this.state.position + 3); p++) if (this.planHand(p)?.safe === word) return true;
+    return false;
+  }
+  /**
+   * The undelayed picker view for seated players: which cards exist on this, the next and the
+   * later tile. Deliberately no played words, hint scores or traps, so it never reveals a move the
+   * delayed board has not shown yet.
+   */
+  picker() {
+    const cur = this.planHand(this.state.position);
+    return {
+      turn: this.state.turn, position: this.state.position, status: this.state.status,
+      current: cur ? { prompt: cur.prompt, hand: cur.hand, safe: cur.safe } : null,
+      nextHand: this.planHand(this.state.position + 1),
+      laterHand: this.planHand(this.state.position + 2),
+    };
   }
 
   private burn(n: number) { this.state.fuse = Math.max(0, this.state.fuse - n); }
@@ -243,9 +298,14 @@ export class Match extends EventEmitter {
     this.fired.add(e.word);
     this.wave.push(e);
     this.bonusesPaid += Math.max(0, e.payout - e.trap.stake);   // the bonus came out of the backers' pool
-    this.burn(this.cfg.fireBurn);
+    // One fuse penalty per played word, however many mines fire on it. Every setter is still paid by the chain.
+    const first = !this.burnedWords.has(e.word);
+    if (first) { this.burnedWords.add(e.word); this.burn(this.cfg.fireBurn); }
+    // At most two detonations per tile; the third would-be detonation is refused upstream once shielded.
+    this.tileFired += 1;
+    if (this.tileFired >= 2 && !this.state.shielded) this.state.shielded = true;
     this.sync();
-    this.push({ type: "trap_fired", trap: e.trap, payout: e.payout, fuseBurn: this.cfg.fireBurn });
+    this.push({ type: "trap_fired", trap: e.trap, payout: e.payout, fuseBurn: first ? this.cfg.fireBurn : 0 });
   }
 
   /** Pull trap/pool totals from the chain, recompute score, broadcast the state. */

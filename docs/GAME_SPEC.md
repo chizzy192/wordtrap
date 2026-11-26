@@ -24,6 +24,26 @@ The fuse is an integer that starts at **180**. It does not burn in real time. Ev
 
 Every action advances `state.turn` by exactly 1. Mines viewers plant during a turn arm on the following turn, so a card that was safe on this response may be mined on the next.
 
+## Looking ahead
+
+`state.nextHand` (with `state.nextPrompt` and `state.nextSafeCard`) and `state.laterHand` show the
+cards of the next two tiles. They are **visible, not playable**: `play_word` only accepts cards in
+`state.hand`. Viewers can see them too and mine them early, so by the time Byte reaches a tile some of
+its cards may already be live mines.
+
+**Safe card.** Every hand has exactly one, `state.safeCard`. Playing it is never recorded as spoken, so
+no mine can fire on it; it still counts toward the tile. A challenge on it is refused (there is nothing
+to disarm).
+
+**One penalty per word.** However many mines sit on one word, playing it costs 22 fuse once. Every
+setter is still paid.
+
+**Shield.** After two detonations on a tile, `state.shielded` becomes true and no more mines fire there
+until the tile is cleared.
+
+**Seats.** Four viewers can sit in a room and plant; the rest watch and back Byte. Seats are enforced
+by the server, not on-chain.
+
 ## Reading the state
 
 Every response is the full state. The fields that matter for a decision:

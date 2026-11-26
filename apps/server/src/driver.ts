@@ -16,7 +16,7 @@ export function decide(state: BoardState, opts: DriverOptions = {}): Move {
   const armed = state.traps.filter((t) => t.status === "armed").length;
   const tilesLeft = state.tiles.length - state.position;
   const challenged = new Set(state.challenged.map((c) => c.word));
-  const risk = (w: string) => (challenged.has(w) ? 0 : state.hint?.[w] ?? UNKNOWN_RISK);
+  const risk = (w: string) => (w === state.safe ? 0.05 : challenged.has(w) ? 0 : state.hint?.[w] ?? UNKNOWN_RISK);   // the safe card is an out, but a smart Byte still spends it
 
   if (!hand.length) return { action: "pass_turn" };
 

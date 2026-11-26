@@ -25,7 +25,10 @@
 html { background:var(--board); }
 body { margin:0; color:var(--text); background:var(--board); background-image:radial-gradient(var(--dot) 1.1px, transparent 1.3px); background-size:14px 14px; font:500 15px/1.45 var(--sans); min-height:100vh; overflow-x:hidden; font-variant-numeric:tabular-nums; }
 :focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
-.wrap { max-width:1100px; margin:0 auto; padding:0 24px 40px; overflow-x:clip; }
+:root { --side:clamp(16px, 3vw, 56px); --gap:clamp(14px, 1.6vw, 32px); --body:clamp(15px, 1.05vw, 19px); --lw:3px; --sh:5px; }
+@media (min-width:1280px) { :root { --lw:4px; --sh:7px; } }
+body { font-size:var(--body); }
+.wrap { margin:0; padding:0 var(--side) var(--gap); overflow-x:clip; }
 header { display:flex; align-items:center; gap:14px; padding:22px 0 10px; flex-wrap:wrap; }
 .wordmark { font:800 30px/1 var(--cond); letter-spacing:-.5px; } .wordmark b { color:var(--red); }
 .meta { color:var(--soft); }
@@ -71,11 +74,21 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
 .msg { margin-top:12px; color:var(--soft); min-height:1.3em; }
 .msg.err { color:var(--red-text); font-weight:600; }
 .empty { color:var(--soft); }
-@media (max-width:760px) {
-  .wrap { padding:0 16px 32px; } .strip h1 { font-size:30px; } .strip { padding:14px 18px; box-shadow:6px 6px 0 var(--hard); }
-  .quick .btn.big { width:100%; }
-  .room { grid-template-columns:1fr auto; } .room .fuse { grid-column:1/-1; } .room .pips { grid-column:1; } .room .join { grid-column:2; justify-self:end; }
-  .code input { width:100%; } .code .btn { width:100%; }
+/* small screens first */
+.strip h1 { font-size:clamp(30px, 4.2vw, 76px); }
+.strip { padding:clamp(14px, 1.4vw, 26px) clamp(18px, 2vw, 36px); box-shadow:calc(var(--sh) + 3px) calc(var(--sh) + 3px) 0 var(--hard); border-width:calc(var(--lw) + 1px); }
+.quick .btn.big { width:100%; font-size:clamp(18px, 1.5vw, 26px); }
+.room { grid-template-columns:1fr auto; border-width:var(--lw); } .room .fuse { grid-column:1/-1; } .room .pips { grid-column:1; } .room .join { grid-column:2; justify-self:end; }
+.code input { width:100%; } .code .btn { width:100%; }
+.btn { border-width:var(--lw); box-shadow:var(--sh) var(--sh) 0 var(--hard); }
+.rooms { gap:var(--gap); }
+@media (min-width:640px) {
+  .quick .btn.big { width:auto; }
+  .code input { width:260px; } .code .btn { width:auto; }
+}
+@media (min-width:900px) {
+  .room { grid-template-columns:1.2fr auto 1fr auto auto; } .room .fuse { grid-column:auto; } .room .pips { grid-column:auto; } .room .join { grid-column:auto; }
+  .room .byte { font-size:clamp(22px, 1.8vw, 32px); }
 }
 @media (prefers-reduced-motion: reduce) { .btn.pressed, .btn:active { transition:none; } }
 </style>
@@ -180,10 +193,13 @@ $("quick").onclick = async () => {
   try {
     let code = null;
     if (DEMO !== "rooms") {
-      const r = await fetch("/api/v1/rooms/quick", { method: "POST" });
-      if (r.ok) code = (await r.json()).code;
+      if (!identity.id) { $("quickMsg").className = "msg err"; $("quickMsg").textContent = "Sign in or play as guest first, then quick play seats you."; closePopovers(); $("firstVisit").hidden = false; return; }
+      const r = await fetch("/api/v1/rooms/quick", { method: "POST", headers: identity.headers(), body: JSON.stringify({ user: identity.id }) });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) { code = j.code; try { localStorage.setItem(`wt.seat.${j.runId}`, j.token); } catch (e) { /* private mode */ } }
+      else if (r.status === 404) { $("quickMsg").className = "msg err"; $("quickMsg").textContent = j.error ?? EMPTY; return; }
     }
-    if (!code) { const pick = rooms.find((x) => x.seats.includes("open")); code = pick?.code ?? null; }
+    if (!code) { const pick = rooms.find((x) => x.seats.some((s) => s === "open" || s === "bot")); code = pick?.code ?? null; }   // bots step aside for people
     if (code) return go(code);
     $("quickMsg").className = "msg err";
     $("quickMsg").textContent = rooms.length ? "Every room is full right now. Open one by code to watch, or wait for a seat." : EMPTY;

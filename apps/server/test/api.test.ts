@@ -38,8 +38,8 @@ test("Byte Arena contract over real HTTP: start → state → bad word 400 → p
   assert.equal(badBody.state.turn, 1);
   assert.deepEqual(badBody.state.hand, state.hand);
 
-  // valid word: 200 with the full state, turn advanced by exactly 1
-  const word = state.hand[0];
+  // valid word: 200 with the full state, turn advanced by exactly 1 (not the safe card: that one is never recorded as spoken)
+  const word = state.hand.find((w: string) => w !== state.safeCard);
   const ok = await post(`/api/v1/runs/${runId}/play`, { word, turn: 1 }, apiKey);
   assert.equal(ok.status, 200);
   const after = await ok.json();
@@ -142,7 +142,9 @@ test("spectator delay: delay=0 is the live feed, delay=5 holds an event back for
   await new Promise((r) => setTimeout(r, Math.max(0, tEnd + 2300 - Date.now())));
   const fin = await fetch(`${base}/runs/${runId}/spectate?delay=2`).then((r) => r.json());
   assert.equal(fin.state.status, "escaped");
-  assert.deepEqual(fin.state, done);
+  const { seats, host, private: priv, room, ...board } = fin.state;   // the spectator feed adds room fields on top of the board
+  assert.deepEqual(board, done);
+  assert.equal(seats.length, 4); assert.equal(priv, false); assert.equal(host, null); assert.equal(room.code, runId);
   await app.close();
 });
 
@@ -153,7 +155,7 @@ test("mock-mode planter: a browser viewer plants on a hand word and the reveal p
   const { runId, apiKey, state } = await fetch(`${base}/api/v1/runs`, { method: "POST", body: JSON.stringify({ callsign: "b" }) }).then((r) => r.json());
   const { commitment, toHex } = await import("@wordtrap/shared");
   const { mockKey } = await import("../src/chain/mock.ts");
-  const word = state.hand[0];
+  const word = state.hand.find((w: string) => w !== state.safe);   // the safe card can never pay out
   const salt = new Uint8Array(32).fill(1);
   const planted = await fetch(`${base}/runs/${runId}/plant`, { method: "POST", body: JSON.stringify({ commitmentHex: toHex(commitment(word, salt, mockKey("you"))), stake: 0.5, setter: "you" }) }).then((r) => r.json());
   assert.equal(planted.armedTurn, 2);
