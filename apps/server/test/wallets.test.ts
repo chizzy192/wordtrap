@@ -93,7 +93,25 @@ function mockRpc(treasury: string) {
 }
 const hdr = (token: string) => ({ "content-type": "application/json", authorization: `Bearer ${token}` });
 
-test("binding (last resort): the page's address is bound once per Pollar user, one user per address, never changed from the client; deposits credit only from that address", async () => {
+test("no Solana wallet and binding off (the default): a plain sentence, and POST /api/v1/fiat/wallet is refused", async () => {
+  const pol = await mockPollar({ wallet: STELLAR }, [{ id: "usr_1", wallets: [{ network: "stellar", public_key: STELLAR }] }]);
+  const app = createApp({ sim: false, makeChain: async () => new MockChain(), ledgerPath: null, cfg: { tiles: 2 }, pollar: pol.gw, rpc: mockRpc("x").rpc });
+  const port = await app.listen(0); const base = `http://127.0.0.1:${port}`;
+  try {
+    const r = await fetch(`${base}/api/v1/fiat/balance`, { headers: hdr("tok") });
+    assert.equal(r.status, 428);
+    assert.equal((await r.json()).error, "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.");
+    const bind = await fetch(`${base}/api/v1/fiat/wallet`, { method: "POST", headers: hdr("tok"), body: JSON.stringify({ address: SOL }) });
+    assert.equal(bind.status, 403);
+    assert.equal((await bind.json()).error, "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.");
+    assert.equal(app.ledger.walletOf("usr_1"), null, "nothing bound");
+    // even a binding left in the ledger file is ignored while the flag is off
+    app.ledger.bindWallet("usr_1", SOL);
+    assert.equal((await fetch(`${base}/api/v1/fiat/balance`, { headers: hdr("tok") })).status, 428);
+  } finally { await app.close(); await pol.close(); }
+});
+
+test("binding (ALLOW_CLIENT_WALLET_BINDING=1 only): the page's address is bound once per Pollar user, one user per address, never changed from the client; deposits credit only from that address", async () => {
   const pol = await mockPollar({ wallet: STELLAR }, [{ id: "usr_1", wallets: [{ network: "stellar", public_key: STELLAR }] }]);   // Pollar gives no Solana wallet
   const lines: string[] = []; const orig = console.log; console.log = (...a: any[]) => lines.push(a.join(" "));
   const treasuryOf = (hex: string) => base58(Uint8Array.from(Buffer.from(hex, "hex")));
@@ -101,7 +119,7 @@ test("binding (last resort): the page's address is bound once per Pollar user, o
   try {
     const chain = new MockChain(); const treasury = treasuryOf(Buffer.from(chain.treasury().pubkey).toString("hex"));
     const m = mockRpc(treasury);
-    app = createApp({ sim: false, makeChain: async () => new MockChain(), ledgerPath: null, cfg: { tiles: 2 }, pollar: pol.gw, rpc: m.rpc });
+    app = createApp({ sim: false, makeChain: async () => new MockChain(), ledgerPath: null, cfg: { tiles: 2 }, pollar: pol.gw, rpc: m.rpc, allowClientWalletBinding: true });
     const port = await app.listen(0); const base = `http://127.0.0.1:${port}`;
     // without a bound wallet, money calls answer 428 so the page sends the SDK's address
     const r428 = await fetch(`${base}/api/v1/fiat/balance`, { headers: hdr("tok") });

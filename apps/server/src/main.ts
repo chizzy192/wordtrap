@@ -64,6 +64,9 @@ export interface AppOptions {
   rpc?: SolanaRpc;
   /** USDC mint for payments. Default: USDC_MINT env, else Circle's mint for the cluster RPC_URL points at. */
   usdcMint?: string;
+  /** Let the funds page bind the wallet address the SDK shows when Pollar's server side gives none (env
+   *  ALLOW_CLIENT_WALLET_BINDING=1). Off by default: a client could bind another player's address first. */
+  allowClientWalletBinding?: boolean;
   /** Default spectator delay in seconds for GET /runs/:id/spectate (env SPECTATE_DELAY_SECONDS, default 4). Never affects the Byte API. */
   spectateDelay?: number;
   /** Player display names keyed by wallet address / guest id. Default: in memory. */
@@ -131,6 +134,8 @@ export function createApp(o: AppOptions = {}): App {
   const ledger = new FiatLedger(o.ledgerPath === undefined ? (process.env.FIAT_LEDGER_PATH ?? LEDGER_DEFAULT) : o.ledgerPath);
   const pollar = o.pollar ?? pollarFromEnv();
   const rpc = o.rpc ?? new JsonRpc(process.env.RPC_URL ?? "https://api.devnet.solana.com");
+  const allowClientWalletBinding = o.allowClientWalletBinding ?? process.env.ALLOW_CLIENT_WALLET_BINDING === "1";
+  const NO_WALLET = "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.";
   /** Which Solana cluster RPC_URL points at (from its genesis hash), cached. */
   let clusterCache: string | null = null;
   const cluster = async () => (clusterCache ??= GENESIS[await rpc.getGenesisHash()] ?? "unknown");
@@ -188,8 +193,8 @@ export function createApp(o: AppOptions = {}): App {
    *  verifySession), else the address this user bound through POST /api/v1/fiat/wallet. */
   async function sessionOf(token: string, o: { allowUnbound?: boolean } = {}): Promise<PollarSession> {
     const s = await pollar.verifySession(token);
-    if (!s.wallet) s.wallet = ledger.walletOf(s.userId);
-    if (!s.wallet && !o.allowUnbound) throw new FiatError("We could not read your Solana wallet from Pollar. Open the funds page so it can send your wallet address.", 428);
+    if (!s.wallet && allowClientWalletBinding) s.wallet = ledger.walletOf(s.userId);
+    if (!s.wallet && !o.allowUnbound) throw new FiatError(allowClientWalletBinding ? "We could not read your Solana wallet from Pollar. Open the funds page so it can send your wallet address." : NO_WALLET, 428);
     if (s.fresh) reconcileSoon(s);
     return s;
   }
@@ -340,6 +345,7 @@ export function createApp(o: AppOptions = {}): App {
         // address the SDK shows and it is bound to the verified Pollar userId once (one per user, one user per address,
         // never changed from here). Deposits still credit only when the on-chain sender equals the bound address.
         if (pollar.kind !== "pollar") return json(res, 404, { error: "Wallet binding only exists in Pollar mode." });
+        if (!allowClientWalletBinding) return json(res, 403, { error: NO_WALLET });
         const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
         if (!m) throw new FiatError("Sign in with Google first.", 401);
         const b = await readJson(req);
