@@ -635,7 +635,7 @@ let runId = (location.pathname.match(/^\/watch\/([^/]+)/) || [])[1] || null;
 let state = null, lastSeq = 0, fired = new Set(), pendingMulti = false;
 const mySecrets = new Map(); // trapId -> {word, salt, setter, armedTurn}
 // ---- identity (wallet address or guest id), display names from the feed, funds ----
-import { identity, short, validName, friendly } from "/identity.js";
+import { identity, short, validName, friendly, copyText, roomLink } from "/identity.js";
 let players = {};            // address -> display name, from the spectate feed
 let treasury = null;         // { pubkeyHex, mode, guestStartFunds } from /api/v1/treasury
 let balanceMicro = null;     // the signed-in player's ledger balance
@@ -1065,8 +1065,8 @@ $("seatActions").addEventListener("click", async (e) => {
   if (b.id === "leaveSeat") seatAction("leave");
   if (b.id === "editName") openNamePrompt();
   if (b.id === "copyLink") {
-    try { await navigator.clipboard.writeText(location.origin + "/watch/" + runId); b.textContent = "Link copied"; setTimeout(() => { b.textContent = "Copy room link"; }, 2000); }
-    catch { $("seatMsg").textContent = "Couldn't copy. The link is " + location.origin + "/watch/" + runId; }
+    if (await copyText(roomLink(runId))) { b.textContent = "Link copied"; setTimeout(() => { b.textContent = "Copy room link"; }, 2000); }
+    else $("seatMsg").textContent = "Couldn't copy. The link is " + roomLink(runId);
   }
 });
 $("privateBtn").onclick = async () => {

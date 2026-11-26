@@ -1,10 +1,11 @@
-// Entry: with VITE_POLLAR_PUBLISHABLE_KEY set, the page runs inside PollarProvider (Google sign-in,
-// Pollar wallets, card/ramp top-ups). Without it, "demo credits" mode: a plain user name or a
-// Wallet Standard wallet address identifies you and POST /dev/credit funds the balance.
+// Entry: with VITE_POLLAR_PUBLISHABLE_KEY set, the page runs inside PollarProvider (Google sign-in, Pollar wallets,
+// USDC top-ups). Without it, "demo credits" mode: a guest id or a Wallet Standard address identifies you and
+// POST /dev/credit funds the balance.
+import "@pollar/react/styles.css";   // Pollar's own stylesheet first (modals, wallet menus); ours themes it after
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import "./styles.css";
+import "./stake.css";
 
 const KEY = import.meta.env.VITE_POLLAR_PUBLISHABLE_KEY as string | undefined;
 const BASE_URL = (import.meta.env.VITE_POLLAR_BASE_URL as string | undefined) ?? "https://sdk.api.pollar.xyz";

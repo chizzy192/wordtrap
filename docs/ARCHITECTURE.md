@@ -191,7 +191,7 @@ sequenceDiagram
 | Invariant | Where |
 |---|---|
 | I1 treasury is the on-chain setter; browser hashes with the treasury pubkey | `Chain.treasury()`, `/api/v1/treasury`, `state.treasury` |
-| I2 word + salt stay in the browser until played; server reveals as treasury; no browser keys | `apps/stake/src/App.tsx`, `/runs/:id/reveal-fiat` |
+| I2 word + salt stay in the browser until played; server reveals as treasury; no browser keys | the board's planter (`apps/watch/index.html`), `/runs/:id/reveal-fiat` |
 | I3 integer micro-USD everywhere | `fiat.ts` (`MICRO`, `toMicro`) |
 | I4 every change persisted with write-then-rename to `data/fiat-ledger.json` | `FiatLedger.save()` |
 | I5 credits only after the server confirms the USDC transfer on Solana (finalized, right sender, destination, mint, amount, network); exactly once per signature; not final yet → pending + retry | `confirmUsdcPayment()`, `JsonRpc`, 30 s retry loop |

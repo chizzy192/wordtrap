@@ -69,7 +69,8 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
 .quick { display:flex; align-items:center; gap:18px; flex-wrap:wrap; margin-top:18px; }
 .quick .sub { color:var(--soft); }
 .rooms { display:flex; flex-direction:column; gap:12px; }
-.room { display:grid; grid-template-columns:1.2fr auto 1fr auto auto; gap:16px; align-items:center; padding:12px 16px; border:3px solid var(--line); background:var(--sheet); }
+.room { display:grid; grid-template-columns:1.2fr auto 1fr auto auto auto; gap:16px; align-items:center; padding:12px 16px; border:3px solid var(--line); background:var(--sheet); }
+.empty.err { color:var(--red-text); }
 .room .byte { font:600 22px/1 var(--cond); }
 .room .turn { color:var(--soft); white-space:nowrap; }
 .fuse { display:flex; align-items:center; gap:10px; min-width:120px; }
@@ -89,7 +90,7 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
 .strip h1 { font-size:clamp(30px, 4.2vw, 76px); }
 .strip { padding:clamp(14px, 1.4vw, 26px) clamp(18px, 2vw, 36px); box-shadow:calc(var(--sh) + 3px) calc(var(--sh) + 3px) 0 var(--hard); border-width:calc(var(--lw) + 1px); }
 .quick .btn.big { width:100%; font-size:clamp(18px, 1.5vw, 26px); }
-.room { grid-template-columns:1fr auto; border-width:var(--lw); } .room .fuse { grid-column:1/-1; } .room .pips { grid-column:1; } .room .join { grid-column:2; justify-self:end; }
+.room { grid-template-columns:1fr auto auto; border-width:var(--lw); } .room .fuse { grid-column:1/-1; } .room .pips { grid-column:1; } .room .copy { grid-column:2; } .room .join { grid-column:3; justify-self:end; }
 .code input { width:100%; } .code .btn { width:100%; }
 .btn { border-width:var(--lw); box-shadow:var(--sh) var(--sh) 0 var(--hard); }
 .rooms { gap:var(--gap); }
@@ -98,7 +99,7 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
   .code input { width:260px; } .code .btn { width:auto; }
 }
 @media (min-width:900px) {
-  .room { grid-template-columns:1.2fr auto 1fr auto auto; } .room .fuse { grid-column:auto; } .room .pips { grid-column:auto; } .room .join { grid-column:auto; }
+  .room { grid-template-columns:1.2fr auto 1fr auto auto auto; } .room .fuse { grid-column:auto; } .room .pips { grid-column:auto; } .room .copy { grid-column:auto; } .room .join { grid-column:auto; }
   .room .byte { font-size:clamp(22px, 1.8vw, 32px); }
 }
 @media (prefers-reduced-motion: reduce) { .btn.pressed, .btn:active { transition:none; } }
@@ -121,6 +122,8 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
 <div class="quick">
   <button class="btn big" id="quick" type="button">Quick play</button>
   <span class="sub">Join a room with a free seat.</span>
+  <button class="btn outline" id="startRoom" type="button">Start a room</button>
+  <span class="sub">Open a room where the house Byte plays, and take the first seat.</span>
 </div>
 <div class="msg" id="quickMsg" aria-live="polite"></div>
 
@@ -178,21 +181,32 @@ async function loadRooms() {
       { code: "3nnqz5lk8ak3j", byte: "Byte", turn: 31, fuse: 41, fuseTotal: 180, seats: ["human", "human", "bot", "bot"] },
     ];
   } else {
+    let failed = null;
     try {
       const r = await fetch("/api/v1/rooms");
       rooms = r.ok ? await r.json() : [];
-      if (!r.ok && r.status !== 404) $("quickMsg").textContent = "The room list didn't load. Try again in a moment.";
-    } catch { rooms = []; $("quickMsg").textContent = "The server didn't answer. Try again in a moment."; }
+      if (!r.ok && r.status !== 404) failed = "The room list didn't load. Try again in a moment.";
+    } catch { rooms = []; failed = "The server didn't answer. Try again in a moment."; }
+    if (failed) { $("rooms").innerHTML = `<span class="empty err">${failed}</span>`; return; }   // error state, in the list itself
   }
   rooms = [...rooms].sort(order);
+  const copying = new Set([...$("rooms").querySelectorAll("button.copy.done")].map((b) => b.dataset.copy));   // keep "Link copied" through a refresh
   $("rooms").innerHTML = rooms.length ? rooms.map((r) => `
     <div class="room">
       <span class="byte">${esc(r.byte)}</span>
       <span class="turn">Turn ${r.turn}</span>
       <span class="fuse" aria-label="Fuse ${r.fuse} of ${r.fuseTotal}"><i style="--pct:${Math.max(0, Math.round((100 * r.fuse) / r.fuseTotal))}%"></i><b>${r.fuse}</b></span>
       <span class="pips" aria-label="${r.seats.filter((s) => s === "human").length} people, ${r.seats.filter((s) => s === "bot").length} bots, ${r.seats.filter((s) => s === "open").length} open">${r.seats.map((s) => `<span class="pip ${s}"></span>`).join("")}</span>
+      <button class="btn outline copy${copying.has(r.code) ? " done" : ""}" type="button" data-copy="${esc(r.code)}" aria-label="Copy the link to this room">${copying.has(r.code) ? "Link copied" : "Copy link"}</button>
       <button class="btn outline join" type="button" data-code="${esc(r.code)}">Join</button>
     </div>`).join("") : `<span class="empty">${EMPTY}</span>`;
+}
+/** Copy a room's lobby link and say so on the button for 2 s. */
+async function copyRoom(b, code) {
+  const ok = await copyText(roomLink(code));
+  if (!ok) { $("codeMsg").className = "msg err"; $("codeMsg").textContent = "Couldn't copy. The link is " + roomLink(code); return; }
+  b.textContent = "Link copied"; b.classList.add("done");
+  setTimeout(() => { for (const x of document.querySelectorAll(`button.copy[data-copy="${CSS.escape(code)}"]`)) { x.textContent = "Copy link"; x.classList.remove("done"); } }, 2000);
 }
 
 // Joining lands on the "Pick a side" page for that room.
@@ -217,7 +231,21 @@ $("quick").onclick = async () => {
   } catch { $("quickMsg").className = "msg err"; $("quickMsg").textContent = "The server didn't answer. Try again in a moment."; }
   finally { b.classList.remove("pressed"); b.disabled = false; b.textContent = label; }
 };
-$("rooms").addEventListener("click", (e) => { const b = e.target.closest("button[data-code]"); if (b) go(b.dataset.code); });
+$("rooms").addEventListener("click", (e) => { const c = e.target.closest("button[data-copy]"); if (c) return copyRoom(c, c.dataset.copy); const b = e.target.closest("button[data-code]"); if (b) go(b.dataset.code); });
+// Start a room: the house Byte plays, the starter takes the first seat and lands on the room's side page.
+$("startRoom").onclick = async () => {
+  const b = $("startRoom"); const label = b.textContent; b.disabled = true; b.textContent = "Opening a room";
+  $("quickMsg").className = "msg"; $("quickMsg").textContent = "";
+  try {
+    if (!identity.id) { $("quickMsg").className = "msg err"; $("quickMsg").textContent = "Sign in or play as guest first, then start a room."; closePopovers(); $("firstVisit").hidden = false; return; }
+    const r = await fetch("/api/v1/rooms", { method: "POST", headers: identity.headers(), body: JSON.stringify({ user: identity.id }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { $("quickMsg").className = "msg err"; $("quickMsg").textContent = friendly(j.error); return; }
+    try { localStorage.setItem(`wt.seat.${j.runId}`, j.token); } catch (e) { /* private mode */ }
+    go(j.code);
+  } catch { $("quickMsg").className = "msg err"; $("quickMsg").textContent = "The server didn't answer. Try again in a moment."; }
+  finally { b.disabled = false; b.textContent = label; }
+};
 // Arriving with ?room=<code> (a shared link) opens that room; without it the room list is always shown first.
 { const wanted = new URLSearchParams(location.search).get("room"); if (wanted && /^[a-z0-9]{6,20}$/i.test(wanted)) go(wanted.toLowerCase()); }
 $("codeForm").onsubmit = async (e) => {
@@ -235,7 +263,7 @@ $("codeForm").onsubmit = async (e) => {
 };
 
 // ---- account area (shared identity module) ----
-const { identity, validName, friendly } = await import("/identity.js");
+const { identity, validName, friendly, copyText, roomLink } = await import("/identity.js");
 let treasury = null, balanceMicro = null;
 const usd = (n) => "$" + Number(n || 0).toFixed(2);
 const popovers = ["firstVisit", "namePrompt", "fundsPanel"];

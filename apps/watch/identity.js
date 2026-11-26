@@ -11,6 +11,21 @@ export const short = (id) => (!id ? "" : id.length <= 10 ? id : `${id.slice(0, 4
 export const NAME_RULE = "Names are 2 to 16 characters: letters, numbers, spaces and underscores.";
 export const validName = (raw) => { const n = String(raw ?? "").trim().replace(/\s+/g, " "); return n.length >= 2 && n.length <= 16 && /^[A-Za-z0-9_][A-Za-z0-9 _]{0,15}$/.test(n) ? n : null; };
 
+/** Copy text for the player: the clipboard API, else a hidden textarea + execCommand("copy"). Returns whether it worked. */
+export async function copyText(text) {
+  try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; } } catch (e) { /* fall through */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return !!ok;
+  } catch (e) { return false; }
+}
+/** The link that opens a room from the lobby: https://<host>/play?room=<code>. */
+export const roomLink = (code) => `${location.origin}/play?room=${encodeURIComponent(code)}`;
+
 /** What a player may read. Known raw server strings become sentences, sentences written for players pass through,
  *  anything else (protocol hints, stack-like text, codes) becomes the fallback. Never show a server body directly. */
 export function friendly(raw, fallback = "That didn't work. Try again.") {

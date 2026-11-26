@@ -69,6 +69,6 @@ test("invalid names get a clear message", async () => {
     assert.equal((await r.json()).error, "Names are 2 to 16 characters: letters, numbers, spaces and underscores.");
   }
   assert.deepEqual(validateName("ok name_1"), { ok: true, name: "ok name_1" });
-  assert.equal((await fetch(`${base}/api/v1/profile`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Sam" }) })).status, 400, "no identity");
+  assert.equal((await fetch(`${base}/api/v1/profile`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Sam" }) })).status, 401, "no identity");
   await app.close();
 });

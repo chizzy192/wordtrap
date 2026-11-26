@@ -1,0 +1,88 @@
+{
+  "before-light-1366x768": {
+    "wallet": {
+      "cls": "pollar-wallet-login-btn",
+      "w": 185,
+      "h": 43,
+      "bg": "rgb(155, 123, 255)",
+      "chevron": null,
+      "header": 72
+    },
+    "pageHeight": 768,
+    "hScroll": false,
+    "modal": {
+      "open": true,
+      "box": [
+        0,
+        733,
+        1366,
+        10055
+      ],
+      "inside": false,
+      "widestMedia": 4320,
+      "mediaCount": 5,
+      "overlayPosition": "static",
+      "overlayBg": "rgba(0, 0, 0, 0)",
+      "overlayZ": "auto",
+      "focusInside": false,
+      "title": "Pollar"
+    },
+    "afterEscape": true,
+    "afterX": false
+  },
+  "before-light-390x844": {
+    "wallet": {
+      "cls": "pollar-wallet-login-btn",
+      "w": 185,
+      "h": 43,
+      "bg": "rgb(155, 123, 255)",
+      "chevron": null,
+      "header": 183
+    },
+    "pageHeight": 1238,
+    "hScroll": false
+  },
+  "before-dark-1366x768": {
+    "wallet": {
+      "cls": "pollar-wallet-login-btn",
+      "w": 185,
+      "h": 43,
+      "bg": "rgb(155, 123, 255)",
+      "chevron": null,
+      "header": 72
+    },
+    "pageHeight": 768,
+    "hScroll": false,
+    "modal": {
+      "open": true,
+      "box": [
+        0,
+        733,
+        1366,
+        10055
+      ],
+      "inside": false,
+      "widestMedia": 4320,
+      "mediaCount": 5,
+      "overlayPosition": "static",
+      "overlayBg": "rgba(0, 0, 0, 0)",
+      "overlayZ": "auto",
+      "focusInside": false,
+      "title": "Pollar"
+    },
+    "afterEscape": true,
+    "afterX": false
+  },
+  "before-dark-390x844": {
+    "wallet": {
+      "cls": "pollar-wallet-login-btn",
+      "w": 185,
+      "h": 43,
+      "bg": "rgb(155, 123, 255)",
+      "chevron": null,
+      "header": 183
+    },
+    "pageHeight": 1238,
+    "hScroll": false
+  }
+}

@@ -1,4 +1,5 @@
-// Entry for /side/<runId>: "Pick a side". Shares the Pollar sign-in and balance logic with the stake page.
+// Entry for /side/<runId>: "Pick a side". Shares the Pollar sign-in and balance logic with the funds page.
+import "@pollar/react/styles.css";   // Pollar's own stylesheet first; side.css themes its modals after
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Side } from "./SidePage";

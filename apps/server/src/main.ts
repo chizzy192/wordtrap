@@ -72,6 +72,8 @@ export interface AppOptions {
   guestStartFunds?: number;
   /** Bots sit in empty seats and plant (needs `crowd`). Default: same as `crowd`. */
   bots?: boolean;
+  /** Pace of the house Byte in rooms started from the lobby (ms between moves). Default 2500. */
+  houseDelayMs?: number;
 }
 
 export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
@@ -136,6 +138,9 @@ export function createApp(o: AppOptions = {}): App {
   const treasuryAddress = async () => base58((runs.current()?.chain ?? (await makeChain())).treasury().pubkey);
 
   const crowdOn = !!(o.sim || o.crowd);
+  // "Start a room" from the lobby: a run played by the house Byte (the local driver over this same API). Capped.
+  const HOUSE_MAX = 3, houseDelayMs = o.houseDelayMs ?? 2500, houseRuns = new Set<string>();
+  const houseStop = new AbortController();                      // app.close() stops every house Byte
   const nameCache = new Map<string, string>();        // address -> display name, filled as profiles are read or written
   const runs = new RunManager({
     makeChain,
@@ -344,6 +349,22 @@ export function createApp(o: AppOptions = {}): App {
       // ---- rooms and seats (server-enforced; the program knows nothing about seats) ----
       if (p === "/api/v1/rooms" && req.method === "GET") {
         return json(res, 200, runs.listRooms().map((r) => { const s = r.match.snapshot(); return { runId: r.id, code: r.id, byte: s.callsign ?? "Byte", turn: s.turn, fuse: s.fuse, fuseTotal: s.fuseTotal, seats: r.room.view(null, {}).map((v) => v.kind), people: r.room.humans().length }; }));
+      }
+      if (p === "/api/v1/rooms" && req.method === "POST") {
+        const b = await readJson(req);
+        const user = await identify(req, b);
+        for (const id of houseRuns) if (runs.get(id)?.match.finished()) houseRuns.delete(id);
+        if (houseRuns.size >= HOUSE_MAX) return json(res, 409, { error: "Three house rooms are already open. Join one of them instead." });
+        const started = await runs.start("House Byte");
+        houseRuns.add(started.runId);
+        const run = runs.get(started.runId)!;
+        const turn = run.match.snapshot().turn;
+        const seat = run.room.take(user, turn);                     // the starter is seated first, so they host the room
+        runs.announce(run, { type: "seat", action: "take", seat: seat.no, address: user, turn, detail: `${runs.nameOf(user)} opened the room and took seat ${seat.no}.` });
+        playRunOverHttp(`http://127.0.0.1:${port}`, { callsign: "House Byte", delayMs: houseDelayMs, existing: started, signal: houseStop.signal })
+          .catch((e) => console.warn(`[rooms] house Byte stopped in ${started.runId}:`, (e as Error).message))
+          .finally(() => houseRuns.delete(started.runId));
+        return json(res, 200, { runId: run.id, code: run.id, seat: seat.no, token: seat.token, host: true, room: run.room.summary(user, Object.fromEntries(nameCache)) });
       }
       if (p === "/api/v1/rooms/quick" && req.method === "POST") {
         const b = await readJson(req);
@@ -560,20 +581,20 @@ export function createApp(o: AppOptions = {}): App {
     server, runs, ledger, pollar,
     port: () => port,
     listen: (want: number) => new Promise<number>((r) => server.listen(want, () => { port = (server.address() as any).port; r(port); })),
-    close: () => { clearInterval(retry); return new Promise<void>((r) => server.close(() => r())); },
+    close: () => { clearInterval(retry); houseStop.abort(); return new Promise<void>((r) => server.close(() => r())); },
   };
 }
 
 // ---------- SIM: a local driver plays runs through the public API (our Byte rehearsal) ----------
 
-export async function playRunOverHttp(base: string, o: { callsign: string; delayMs: number; log?: (s: string) => void }) {
+export async function playRunOverHttp(base: string, o: { callsign: string; delayMs: number; log?: (s: string) => void; existing?: { runId: string; apiKey: string; state: any }; signal?: AbortSignal }) {
   const log = o.log ?? (() => {});
-  const started = await fetch(`${base}/api/v1/runs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ callsign: o.callsign }) }).then((r) => r.json());
+  const started = o.existing ?? await fetch(`${base}/api/v1/runs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ callsign: o.callsign }) }).then((r) => r.json());
   const { runId, apiKey } = started;
   let state = started.state;
   const headers = { "content-type": "application/json", authorization: `Bearer ${apiKey}` };
   log(`run ${runId} · watch ${base}/watch/${runId}`);
-  while (state.status === "live") {
+  while (state.status === "live" && !o.signal?.aborted) {
     const mv = decide(state);
     const route = Object.entries(ACTION_ROUTES).find(([, a]) => a === mv.action)![0];
     let r: Response | null = null;
@@ -581,7 +602,7 @@ export async function playRunOverHttp(base: string, o: { callsign: string; delay
       try { r = await fetch(`${base}/api/v1/runs/${runId}/${route}`, { method: "POST", headers, body: JSON.stringify({ word: mv.word, turn: state.turn }) }); }
       catch (e) { log(`  fetch failed (${(e as Error).message}), retrying`); await new Promise((res) => setTimeout(res, 500 * (attempt + 1))); }
     }
-    if (!r) { log("  giving up on this move"); continue; }
+    if (!r) { log("  the server is not answering; this driver stops"); break; }
     const body = await r.json();
     if (!r.ok) { log(`  ${r.status} ${body.error}`); state = body.state ?? (await fetch(`${base}/api/v1/runs/${runId}/state`, { headers }).then((x) => x.json())); continue; }
     state = body;

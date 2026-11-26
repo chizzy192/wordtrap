@@ -57,11 +57,11 @@ test("navigation: Rooms link beside the logo on the board and the side page, hid
   const side = read("../../stake/src/SidePage.tsx");
   assert.ok(side.includes('<a className="nav" href="/play">Rooms</a>'), "side page Rooms link");
   const play = read("../../watch/play.html");
-  assert.ok(play.includes('searchParams.get("room")'), "?room= opens that room");
+  assert.ok(play.includes('.get("room")'), "?room= opens that room");
   const script = play.slice(play.indexOf('<script type="module">'));
   // go() is only reached from a click, a submit, or the ?room= parameter: never from load
   const calls = [...script.matchAll(/\bgo\(/g)].length;
-  assert.equal(calls, 4, "go() is defined once and called from join, code form and ?room= only");
+  assert.equal(calls, 6, "go() is defined once and called from join, quick play, Start a room, the code form and ?room= only");
   assert.ok(!/location\.(href|replace)\(?[^;]*\/side\//.test(script.replace(/function go\(code\)[^\n]*\n/, "")), "no other redirect into a side page");
 });
 

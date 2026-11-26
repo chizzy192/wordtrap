@@ -74,6 +74,7 @@ Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) 
 | `POST /runs/:id/seat` `{ action: "take" \| "leave" }` | identity | Four seats per room. Taking returns `{ seat, token }`; a fifth person gets 409. `plant-fiat` needs the token in `x-seat-token`. Seats idle for 10 turns are freed. |
 | `POST /runs/:id/room` `{ private }` | host | The first person seated is the host; private rooms are hidden from the lobby and quick play. Anyone else gets 403 "Only the host can make the room private." Returns `{ private, host, room }`. |
 | `GET /api/v1/rooms` · `POST /api/v1/rooms/quick` | public · identity | Live public rooms (most people first, then newest); quick play seats you in the first one with a free seat. |
+| `POST /api/v1/rooms` | identity | "Start a room": opens a run played by the house Byte (the local driver over this same API) and seats the caller as host. At most three house rooms at once (409). Returns `{ runId, code, seat, token, room }`. The lobby link for any room is `/play?room=<code>`. |
 | `POST /runs/:id/plant-fiat-batch` `{ items: [{ commitmentHex, stake }] }` | identity | Arm several cards in one action from the player's balance. Returns per-item results and the undelayed turn. |
 | `GET /api/v1/treasury` | public | Where fiat mines are planted from and where top-ups go: `pubkeyHex`, `address`, and in Pollar mode `usdcMint` and `network` (`devnet` / `mainnet`, from `RPC_URL`). |
 | `POST /api/v1/fiat/confirm` `{ signature, amount }` | Pollar sign-in | Confirms a USDC transfer to the treasury on Solana and credits the balance once per signature; `202 pending` until it is finalized (re-checked every 30 s). Demo mode takes `{ paymentId }` from `/dev/credit`. |
@@ -102,8 +103,8 @@ POLLAR_SECRET_KEY=sec_testnet_... RPC_URL=https://api.devnet.solana.com npm run 
 ```
 
 Without keys the page runs in **demo-credit mode**: `POST /dev/credit` funds a balance (mock chain only),
-and the rest of the flow is identical. Manual walkthrough: `/dev/credit` → plant on `/stake/?run=<id>` →
-Byte plays the card → the page reveals it → payout lands in the balance.
+and the rest of the flow is identical. Manual walkthrough: add funds on `/stake/` → take a seat and plant from the
+board (`/watch/<id>`) → Byte plays the card → the board reveals it → payout lands in the balance.
 
 ## Tests
 

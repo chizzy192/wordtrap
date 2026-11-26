@@ -114,3 +114,18 @@ header { display:flex; align-items:center; gap:14px; padding:22px 0 10px; flex-w
 }
 @media (min-width:1600px) { .sides { grid-template-columns:minmax(0, 1fr) minmax(360px, 640px); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration:.001s !important; transition-duration:.001s !important; } }
+
+/* ---------- Pollar's modals and menus, in our tokens (the SDK's stylesheet is imported first in side.tsx) ---------- */
+[class*="pollar-"] {
+  --pollar-brand-bg:var(--sheet) !important; --pollar-brand-text:var(--text) !important; --pollar-brand-muted:var(--soft) !important;
+  --pollar-brand-border:var(--line) !important; --pollar-brand-input-bg:var(--board) !important;
+  --pollar-brand-accent:#FF2E4C !important; --pollar-brand-btn-primary-fg:#FFFFFF !important;
+  --pollar-brand-btn-secondary-bg:var(--sheet) !important; --pollar-brand-btn-secondary-fg:var(--text) !important;
+  --pollar-brand-modal-border-radius:0px !important; --pollar-brand-buttons-border-radius:0px !important;
+  --pollar-card-border-radius:0px !important; --pollar-buttons-border-radius:0px !important; --pollar-input-border-radius:0px !important; --pollar-modal-border-radius:0px !important;
+  --pollar-font-family:var(--sans) !important; --pollar-font-family-mono:var(--sans) !important;
+  --pollar-overlay-bg:rgba(20,18,26,.55) !important;
+}
+.pollar-modal-card { border:var(--lw) solid var(--line) !important; box-shadow:10px 10px 0 var(--red) !important; border-radius:0 !important; }
+.pollar-modal-title, .pollar-modal-card h2 { font:800 clamp(26px, 2.2vw, 34px)/1 var(--cond) !important; }
+[class*="pollar-"] button, [class*="pollar-"] input { border-radius:0 !important; }

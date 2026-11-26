@@ -1,0 +1,148 @@
+/* Funds page (/stake/): the shonen system shared with /play and the watch page. Pollar's own stylesheet is
+   imported first (apps/stake/src/main.tsx); the overrides at the end theme its modals to our tokens. */
+:root, :root[data-theme="light"] { --board:#FFFDF7; --text:#14121A; --soft:#4A4658; --sheet:#FFFFFF; --line:#14121A; --hard:#14121A; --red:#FF2E4C; --red-text:#D4183A; --yellow:#FFD60A; --blue:#2D5BFF; --blue-text:#2D5BFF; --ink:#14121A; --dot:rgba(20,18,26,.13); --grey:#B9B4CC; color-scheme: light; }
+:root[data-theme="dark"] { --board:#14121A; --text:#FFFDF7; --soft:#B9B4CC; --sheet:#1F1C2B; --line:#FFFDF7; --hard:#2D5BFF; --red:#FF2E4C; --red-text:#FF5C74; --yellow:#FFD60A; --blue:#2D5BFF; --blue-text:#8FA9FF; --ink:#14121A; --dot:rgba(255,253,247,.09); --grey:#4A4658; color-scheme: dark; }
+:root { --cond:"Barlow Condensed","Arial Narrow",Impact,"Helvetica Neue",Arial,sans-serif; --sans:"Barlow","Helvetica Neue",Arial,sans-serif; --snap:cubic-bezier(.2,1.4,.3,1); }
+:root { --side:clamp(16px, 3vw, 56px); --gap:clamp(14px, 1.6vw, 32px); --body:clamp(15px, 1.05vw, 19px); --lw:3px; --sh:5px; }
+@media (min-width:1280px) { :root { --lw:4px; --sh:7px; } }
+* { box-sizing:border-box; }
+html { background:var(--board); }
+body { margin:0; color:var(--text); background:var(--board); background-image:radial-gradient(var(--dot) 1.1px, transparent 1.3px); background-size:14px 14px; font:500 var(--body)/1.45 var(--sans); min-height:100vh; overflow-x:hidden; font-variant-numeric:tabular-nums; }
+:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
+.wrap { margin:0; padding:0 var(--side) var(--gap); overflow-x:clip; }
+
+/* ---------- header (shared look with /play and the board) ---------- */
+header { display:flex; align-items:center; gap:14px; padding:16px 0 12px; flex-wrap:wrap; border-bottom:var(--lw) solid var(--line); margin-bottom:var(--gap); }
+.wordmark { display:block; line-height:0; flex:0 0 auto; }
+.wordmark img { display:block; height:26px; width:auto; }
+.wordmark .wm-dark { display:none; }
+:root[data-theme="dark"] .wordmark .wm-light { display:none; }
+:root[data-theme="dark"] .wordmark .wm-dark { display:block; }
+@media (min-width:640px) { .wordmark img { height:32px; } }
+.nav { font-weight:600; color:var(--text); text-decoration:none; padding-bottom:1px; border-bottom:3px solid transparent; }
+.nav:hover { color:var(--red-text); }
+.nav.current { border-bottom-color:var(--red); }
+.hright { margin-left:auto; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.pill { display:inline-flex; align-items:center; gap:8px; height:40px; padding:0 14px; border:var(--lw) solid var(--line); background:var(--sheet); color:var(--text); box-shadow:4px 4px 0 var(--hard); font-weight:500; white-space:nowrap; }
+.pill small { color:var(--soft); font-size:14px; }
+.pill b { font:800 22px/1 var(--cond); }
+.pill.yellow { background:var(--yellow); color:#14121A; border-color:#14121A; }
+.pill.yellow small { color:#4A4658; }
+.walletbtn { display:inline-flex; align-items:center; gap:10px; height:40px; padding:0 14px; border:var(--lw) solid #14121A; background:var(--blue); color:#FFFFFF; font:600 16px var(--sans); cursor:pointer; box-shadow:4px 4px 0 var(--hard); }
+.walletbtn i { width:18px; height:18px; background:var(--yellow); border:2px solid #14121A; }
+#themeBtn { width:40px; height:40px; border:var(--lw) solid var(--line); background:var(--board); color:var(--text); cursor:pointer; display:grid; place-items:center; padding:0; }
+#themeBtn svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2.5; }
+
+/* ---------- buttons: hover, pressed, disabled, keyboard focus ---------- */
+.btn { display:inline-block; font:600 18px var(--sans); padding:14px 24px; border:var(--lw) solid #14121A; background:var(--sheet); color:var(--text); cursor:pointer; text-decoration:none; text-align:center; box-shadow:6px 6px 0 var(--hard); transition:transform .08s, box-shadow .08s; }
+.btn.red { background:var(--red); color:#FFFFFF; }
+.btn.blue { background:var(--blue); color:#FFFFFF; }
+.btn.yellow { background:var(--yellow); color:#14121A; }
+.btn.outline { background:var(--sheet); color:var(--text); border-color:var(--line); box-shadow:none; }
+.btn.wide { display:block; width:100%; }
+.btn.text { background:none; border:0; box-shadow:none; color:var(--blue-text); text-decoration:underline; padding:4px 2px; font-size:16px; }
+.btn:hover:not(:disabled) { transform:translate(-1px,-1px); box-shadow:7px 7px 0 var(--hard); }
+.btn.outline:hover:not(:disabled), .btn.text:hover:not(:disabled) { transform:none; box-shadow:none; color:var(--red-text); }
+.btn:active:not(:disabled) { transform:translate(4px,4px); box-shadow:2px 2px 0 var(--hard); }
+.btn:disabled { background:var(--grey); color:var(--soft); border-color:var(--grey); box-shadow:none; cursor:not-allowed; transform:none; }
+:root[data-theme="dark"] .btn:disabled { color:#B9B4CC; }
+.btn:focus-visible, .walletbtn:focus-visible, .chip:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
+
+/* ---------- page ---------- */
+.strip { display:inline-block; max-width:100%; margin:4px 0 22px; padding:14px 28px; background:var(--yellow); color:var(--ink); border:4px solid var(--ink); box-shadow:8px 8px 0 var(--hard); transform:rotate(-1deg); transform-origin:left center; }
+.strip h1 { font:800 clamp(32px, 4.2vw, 64px)/1 var(--cond); margin:0; }
+.banner { background:#FFF6CC; border:3px solid #14121A; color:#14121A; padding:10px 12px; margin:0 0 14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+:root[data-theme="dark"] .banner { background:#2A1F0A; border-color:var(--yellow); color:var(--yellow); }
+.banner.err { background:#2A0F15; border-color:var(--red); color:#FFB3BB; }
+.grid { display:grid; grid-template-columns:1fr; gap:var(--gap); align-items:start; }
+@media (min-width:760px) { .grid { grid-template-columns:minmax(0, 1.25fr) minmax(320px, 1fr); } }
+.panel { position:relative; background:var(--sheet); border:var(--lw) solid var(--line); box-shadow:calc(var(--sh) + 5px) calc(var(--sh) + 5px) 0 var(--hard); padding:clamp(20px, 2.4vw, 36px) clamp(18px, 2.6vw, 40px) clamp(22px, 2.6vw, 40px); }
+.panel.blue { border-color:var(--blue); box-shadow:calc(var(--sh) + 5px) calc(var(--sh) + 5px) 0 var(--blue); }
+.panel h2 { font:800 clamp(28px, 2.6vw, 40px)/1 var(--cond); margin:0 0 14px; }
+.panel h2.rule { padding-bottom:12px; border-bottom:3px solid var(--line); }
+.stack > * + * { margin-top:var(--gap); }
+
+/* your account */
+.who { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+.who .name { font:800 clamp(24px, 2vw, 32px)/1 var(--cond); }
+.addr { display:inline-flex; align-items:center; gap:8px; border:3px dashed var(--line); padding:6px 10px; color:var(--soft); font-weight:500; background:transparent; cursor:pointer; font-size:16px; }
+.addr:hover { color:var(--text); }
+.tiles { display:grid; grid-template-columns:1fr; gap:14px; align-items:stretch; }
+@media (min-width:640px) { .tiles { grid-template-columns:1fr auto 1fr; } }
+.tile { border:var(--lw) solid var(--line); padding:18px 20px; background:var(--board); }
+.tile.yellow { background:var(--yellow); color:#14121A; border-color:#14121A; box-shadow:6px 6px 0 var(--hard); }
+.tile .k { font-weight:600; margin-bottom:6px; }
+.tile .v { font:800 clamp(44px, 4.6vw, 76px)/1 var(--cond); letter-spacing:-1px; }
+.tile .s { color:var(--soft); margin-top:6px; }
+.tile.yellow .s { color:#4A4658; }
+.arrow { display:grid; place-items:center; color:var(--red); font:800 40px/1 var(--cond); }
+.arrow svg { width:36px; height:36px; }
+@media (max-width:639px) { .arrow svg { transform:rotate(90deg); } }
+.sentence { color:var(--soft); margin:14px 0 0; }
+.divider { border:0; border-top:3px dashed var(--line); opacity:.6; margin:22px 0; }
+
+/* add funds */
+.chips { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
+.chip { font:800 22px/1 var(--cond); padding:12px 22px; border:3px solid var(--line); background:var(--sheet); color:var(--text); cursor:pointer; box-shadow:4px 4px 0 var(--hard); transition:transform .08s, box-shadow .08s; }
+.chip:hover { transform:translate(-1px,-1px); box-shadow:5px 5px 0 var(--hard); }
+.chip:active { transform:translate(3px,3px); box-shadow:1px 1px 0 var(--hard); }
+.chip.on { background:var(--red); color:#FFFFFF; border-color:#14121A; }
+.chip.dashed { font:600 16px var(--sans); border-style:dashed; background:transparent; box-shadow:none; padding:13px 20px; }
+.custom { font:500 18px var(--sans); background:var(--sheet); color:var(--text); border:3px solid var(--line); padding:10px 12px; width:150px; }
+.actions { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+.foot { color:var(--soft); margin:14px 0 0; }
+.notice { border:3px solid var(--line); background:var(--sheet); box-shadow:5px 5px 0 var(--blue); padding:12px 16px; margin:0 0 16px; }
+.notice a { color:var(--blue-text); font-weight:600; }
+.status { margin:14px 0 0; font-weight:600; }
+.status.ok { color:var(--blue-text); }
+.status.err { color:var(--red-text); }
+.progress { height:14px; border:3px solid var(--line); margin-top:10px; background:repeating-linear-gradient(-45deg, var(--yellow) 0 12px, var(--ink) 12px 24px); background-size:34px 34px; animation:march 1s linear infinite; }
+@keyframes march { to { background-position:34px 0; } }
+
+/* live room */
+.live .tag { position:absolute; top:-16px; right:-10px; background:var(--red); color:#FFFFFF; border:3px solid #14121A; padding:6px 16px; font:800 22px/1 var(--cond); transform:rotate(-6deg); box-shadow:4px 4px 0 #14121A; }
+.live .eyebrow { display:flex; align-items:center; gap:8px; color:var(--red-text); font-weight:600; margin-bottom:6px; }
+.live .eyebrow i { width:12px; height:12px; border-radius:50%; background:var(--red); }
+.live h2 { margin-bottom:12px; }
+.facts { display:flex; gap:28px; flex-wrap:wrap; margin:0 0 18px; }
+.facts div { color:var(--soft); }
+.facts b { display:block; font:800 clamp(28px, 2.4vw, 40px)/1 var(--cond); color:var(--text); margin-top:4px; }
+.facts b.red { color:var(--red-text); }
+.pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+
+/* activity */
+.rows { list-style:none; margin:0; padding:0; }
+.rows li { display:grid; grid-template-columns:1fr auto auto; gap:14px; align-items:baseline; padding:12px 0; border-bottom:2px solid var(--line); }
+.rows li:last-child { border-bottom:0; }
+.rows .amt { font:800 20px/1 var(--cond); color:var(--blue-text); }
+.rows .amt.neg { color:var(--red-text); }
+.rows time { color:var(--soft); }
+.empty { color:var(--soft); }
+
+/* signed out */
+.hero { max-width:720px; }
+.hero p { color:var(--soft); font-size:18px; margin:0 0 20px; }
+.hero .actions { margin-top:6px; }
+
+/* motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration:.001s !important; animation-iteration-count:1 !important; transition-duration:.001s !important; }
+  .progress { animation:none; }
+}
+
+/* ---------- Pollar's modals and menus, in our tokens ----------
+   The SDK sets --pollar-brand-* inline from the app's dashboard branding; these win over that with !important. */
+[class*="pollar-"] {
+  --pollar-brand-bg:var(--sheet) !important; --pollar-brand-text:var(--text) !important; --pollar-brand-muted:var(--soft) !important;
+  --pollar-brand-border:var(--line) !important; --pollar-brand-input-bg:var(--board) !important;
+  --pollar-brand-accent:#FF2E4C !important; --pollar-brand-btn-primary-fg:#FFFFFF !important;
+  --pollar-brand-btn-secondary-bg:var(--sheet) !important; --pollar-brand-btn-secondary-fg:var(--text) !important;
+  --pollar-brand-modal-border-radius:0px !important; --pollar-brand-buttons-border-radius:0px !important;
+  --pollar-card-border-radius:0px !important; --pollar-buttons-border-radius:0px !important; --pollar-input-border-radius:0px !important; --pollar-modal-border-radius:0px !important;
+  --pollar-font-family:var(--sans) !important; --pollar-font-family-mono:var(--sans) !important;
+  --pollar-overlay-bg:rgba(20,18,26,.55) !important;
+}
+.pollar-modal-card, [class*="pollar-modal-card"] { border:var(--lw) solid var(--line) !important; box-shadow:10px 10px 0 var(--red) !important; border-radius:0 !important; }
+.pollar-modal-title, .pollar-modal-card h2 { font:800 clamp(26px, 2.2vw, 34px)/1 var(--cond) !important; }
+[class*="pollar-"] button { border-radius:0 !important; }
+[class*="pollar-"] input { border-radius:0 !important; }

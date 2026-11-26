@@ -1,37 +1,24 @@
-// Stake page: top up, plant fiat mines on Byte's hand, back Byte, and auto-reveal when Byte plays
-// a mined card. The salt and word never leave this browser until the word has been played (I2);
-// commitments are computed with the server TREASURY pubkey because the treasury is the on-chain
-// setter for every fiat mine (I1).
+// Funds page (/stake/): sign in through Pollar, move USDC from the Pollar wallet into the game balance, see the live
+// room and your wallet activity. Pollar's own hooks do the wallet work (usePollar: login/logout, wallet, walletBalance,
+// sendPayment, txHistory, modals); the server confirms every top-up on Solana before crediting (apps/server/src/fiat.ts).
+// The identity helpers here are shared with the "Pick a side" page.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePollar, useChains, addressForChain, WalletButton } from "@pollar/react";
+import { usePollar, useChains, addressForChain } from "@pollar/react";
 import type { SubmitOutcome, TxHistoryState, WalletBalanceState } from "@pollar/core";
 
 type Mode = "demo" | "pollar";
 const SERVER = (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "";
-const POLL_MS = 1500;
-const SECRETS_KEY = "wt.fiat.secrets";
-const USER_KEY = "wt.demo.user";
+const POLL_MS = 2000;
+/** The USDC devnet faucet Pollar's wallet balance modal links to. */
+const FAUCET = "https://faucet.circle.com/";
+const CHIPS = [1, 2, 5, 10];
 
-interface Secret { word: string; saltHex: string; runId: string; armedTurn: number }
-interface Treasury { setter: string; pubkeyHex: string; chain: string; mode: string; address?: string; usdcMint?: string; network?: string }
+interface Treasury { setter: string; pubkeyHex: string; chain: string; mode: string; address?: string; usdcMint?: string; network?: string; guestStartFunds?: number }
 const RETURN_TO = (() => { const r = new URLSearchParams(location.search).get("return") ?? ""; return /^\/[^/\\]/.test(r) ? r : ""; })();   // same-origin path only
+/** ?demo=signedout|empty|funded overlays presentation fixtures so every state can be reviewed and tested without a Pollar session. */
+const DEMO = new URLSearchParams(location.search).get("demo");
 
-// ---- crypto: identical to packages/shared + the Rust program ----
-const enc = new TextEncoder();
-const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-const unhex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
-async function sha256(...parts: Uint8Array[]) {
-  const buf = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let o = 0;
-  for (const p of parts) { buf.set(p, o); o += p.length; }
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
-}
-const commitment = (word: string, salt: Uint8Array, setter: Uint8Array) => sha256(enc.encode("wordtrap:v1"), enc.encode(word), salt, setter);
-
-function loadSecrets(): Record<string, Secret> { try { return JSON.parse(localStorage.getItem(SECRETS_KEY) ?? "{}"); } catch { return {}; } }
-function saveSecrets(s: Record<string, Secret>) { try { localStorage.setItem(SECRETS_KEY, JSON.stringify(s)); } catch { /* private mode */ } }
-
-// ---- identity (I6): Pollar session in pollar mode, plain user / wallet address in demo mode ----
-// Guest identity shared with the plain pages (/identity.js): "guest-" + 8 random characters, made once.
+// ---- identity (I6): shared with the plain pages (/identity.js): "guest-" + 8 random characters, made once ----
 const ID_KEY = "wt.identity", MODE_KEY = "wt.identity.mode", NAME_KEY = "wt.profile.name", CHOICE_KEY = "wt.identity.choice";
 function newGuestId() { const a = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"; return "guest-" + [...crypto.getRandomValues(new Uint8Array(8))].map((x) => a[x % a.length]).join(""); }
 /** What a player may read: known raw server strings become sentences, player sentences pass through, anything else falls back. */
@@ -44,6 +31,20 @@ export function friendly(raw: unknown, fallback = "That didn't work. Try again."
   if (/^[A-Z][^{}<>`]*[.!?]$/.test(s) && !/:\s*\S*(error|undefined|null)/i.test(s)) return s;
   return fallback;
 }
+/** Copy text for the player: the clipboard API, else a hidden textarea + execCommand("copy"). */
+export async function copyText(text: string): Promise<boolean> {
+  try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; } } catch { /* fall through */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return !!ok;
+  } catch { return false; }
+}
+/** The link that opens a room from the lobby. */
+export const roomLink = (code: string) => `${location.origin}/play?room=${encodeURIComponent(code)}`;
 export const shortAddress = (id: string) => (!id ? "" : id.length <= 10 ? id : `${id.slice(0, 4)}…${id.slice(-4)}`);
 export function readIdentity() { try { return { id: localStorage.getItem(ID_KEY) ?? "", mode: localStorage.getItem(MODE_KEY) ?? "", name: localStorage.getItem(NAME_KEY) ?? "", chosen: !!localStorage.getItem(CHOICE_KEY) }; } catch { return { id: "", mode: "", name: "", chosen: false }; } }
 export function chooseGuest(): string { const cur = readIdentity(); const id = cur.mode === "guest" && cur.id ? cur.id : newGuestId(); try { localStorage.setItem(ID_KEY, id); localStorage.setItem(MODE_KEY, "guest"); localStorage.setItem(CHOICE_KEY, "1"); } catch { /* private */ } return id; }
@@ -71,8 +72,8 @@ function usdcOf(b: WalletBalanceState | undefined): number | null {
 
 /**
  * Identity for both pages. Pollar mode is Pollar's own hooks: `usePollar()` (login/logout, wallet, walletBalance,
- * sendPayment, txHistory, getClient) and `useChains()` + `addressForChain` for the Solana address. Demo mode is a
- * guest id or a Wallet Standard address. `mode` never changes after mount, so the hook order is stable.
+ * sendPayment, txHistory, getClient, the modals) and `useChains()` + `addressForChain` for the Solana address.
+ * Demo mode is a guest id or a Wallet Standard address. `mode` never changes after mount, so the hook order is stable.
  */
 export function useIdentity(mode: Mode) {
   const p = mode === "pollar" ? usePollar() : null;
@@ -83,7 +84,6 @@ export function useIdentity(mode: Mode) {
   const [token, setToken] = useState<string | null>(null);
   const [pollarErr, setPollarErr] = useState<string | null>(null);
 
-  // signed in through Pollar: the Solana wallet is the identity; the access token goes to the server as Bearer
   const solAddress = p ? (addressForChain(p.wallets, "SOLANA") || (chains?.primaryChain === "SOLANA" ? chains.primaryAddress : "") || p.wallet?.address || "") : "";
   useEffect(() => {
     if (!p) return;
@@ -145,190 +145,281 @@ export function useIdentity(mode: Mode) {
 
   return { mode, user, token, pollar: p, pollarErr, setDemoUser, connectWallet, headers, label, displayName, saveName, chosen: readIdentity().chosen,
     signInGoogle: () => p?.login({ provider: "google" }), openSignIn: () => p?.openLoginModal(),
-    signOut: () => { p?.logout(); try { localStorage.removeItem("wt.session.token"); } catch { /* private */ } },
+    signOut: () => { p?.logout(); try { localStorage.removeItem("wt.session.token"); localStorage.removeItem(ID_KEY); localStorage.removeItem(MODE_KEY); } catch { /* private */ } },
     usdc, walletStep: p?.walletBalance.step ?? "idle", refreshWallet, sendUsdc,
-    txHistory: (p?.txHistory ?? { step: "idle" }) as TxHistoryState, loadHistory, openTxHistory: () => p?.openTxHistoryModal() };
+    txHistory: (p?.txHistory ?? { step: "idle" }) as TxHistoryState, loadHistory, openTxHistory: () => p?.openTxHistoryModal(),
+    openWallet: () => p?.openWalletBalanceModal(), openSend: () => p?.openSendModal() };
+}
+
+/**
+ * Manners for Pollar's modals, which the SDK renders in place with its own overlay: close on Escape, keep keyboard
+ * focus inside the open card, and put focus back where it was when the card goes away.
+ */
+function useModalManners(enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+    let last: Element | null = null, card: HTMLElement | null = null;
+    const focusables = (el: HTMLElement) => [...el.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])')].filter((e) => e.offsetParent !== null);
+    const onKey = (e: KeyboardEvent) => {
+      if (!card) return;
+      if (e.key === "Escape") { e.preventDefault(); (card.querySelector<HTMLElement>(".pollar-modal-close, [aria-label='Close']"))?.click(); return; }
+      if (e.key === "Tab") {
+        const f = focusables(card); if (!f.length) return;
+        const i = f.indexOf(document.activeElement as HTMLElement);
+        if (e.shiftKey && (i <= 0)) { e.preventDefault(); f[f.length - 1].focus(); }
+        else if (!e.shiftKey && (i === -1 || i === f.length - 1)) { e.preventDefault(); f[0].focus(); }
+      }
+    };
+    const sync = () => {
+      const now = document.querySelector<HTMLElement>(".pollar-overlay .pollar-modal-card");
+      if (now && now !== card) { last = document.activeElement; card = now; (focusables(now)[0] ?? now).focus(); }
+      if (!now && card) { card = null; (last as HTMLElement | null)?.focus?.(); last = null; }
+    };
+    const mo = new MutationObserver(sync);
+    mo.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener("keydown", onKey, true);
+    return () => { mo.disconnect(); document.removeEventListener("keydown", onKey, true); };
+  }, [enabled]);
+}
+
+const usd = (n: number) => "$" + Number(n || 0).toFixed(2);
+const money = (n: number) => (Number.isInteger(n) ? "$" + n : usd(n));
+function when(iso: string | number) {
+  const d = new Date(iso); if (Number.isNaN(d.getTime())) return "";
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return `Today, ${hm}`;
+  if (d.toDateString() === y.toDateString()) return `Yesterday, ${hm}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })}, ${hm}`;
+}
+interface Row { id: string; text: string; amount: string | null; neg: boolean; at: string }
+/** One Pollar history record as a sentence. A USDC transfer to the game treasury reads "Added $x to game". */
+function rowOf(r: any, treasury?: string | null): Row {
+  const sum = String(r.summary ?? r.operation ?? "Wallet activity");
+  const amtRaw = r.details?.amount ?? r.amount ?? null;
+  const amtNum = amtRaw != null && Number.isFinite(Number(amtRaw)) ? Number(amtRaw) : null;
+  const toTreasury = treasury && (String(r.details?.destination ?? r.destination ?? "") === treasury || sum.includes(shortAddress(treasury)));
+  const text = toTreasury && amtNum !== null ? `Added ${usd(amtNum)} to game` : sum.replace(/\.$/, "");
+  return { id: String(r.id ?? r.hash), text, amount: amtNum !== null ? `${toTreasury ? "+" : ""}${usd(amtNum)}` : null, neg: false, at: when(r.createdAt) };
+}
+
+/** Fixtures for ?demo= (presentation only; nothing is sent to the server). */
+function fixture(demo: string | null) {
+  if (demo === "signedout") return { signedIn: false } as const;
+  if (demo === "empty" || demo === "funded") {
+    const funded = demo === "funded";
+    const now = Date.now();
+    return { signedIn: true, name: "Emmanuel", address: "BhPmKWjR5t2cq8ULqu9vnM3nGhtaJ6V", usdc: funded ? 8 : 0, game: funded ? 2 : 0,
+      rows: funded ? [{ id: "a", text: "Added to game", amount: "+$2.00", neg: false, at: when(now - 5 * 60e3) }, { id: "b", text: "Test USDC received", amount: "+$10.00", neg: false, at: when(now - 9 * 60e3) }, { id: "c", text: "Signed in with Google", amount: null, neg: false, at: when(now - 12 * 60e3) }] : [],
+      run: { runId: "demo", callsign: "Oly", turn: 9, fuse: 122, cleared: 3, tiles: 7, seatsOpen: 4 } } as const;
+  }
+  return null;
 }
 
 export function App({ mode }: { mode: Mode }) {
   const id = useIdentity(mode);
+  useModalManners(mode === "pollar");
+  const demo = fixture(DEMO);
   const [treasury, setTreasury] = useState<Treasury | null>(null);
-  const [runId, setRunId] = useState<string | null>(() => new URLSearchParams(location.search).get("run"));
-  const [state, setState] = useState<any>(null);
   const [balance, setBalance] = useState<any>(null);
-  const [secrets, setSecrets] = useState<Record<string, Secret>>(loadSecrets);
-  const [toast, setToast] = useState<string>("");
-  const [word, setWord] = useState("");
-  const [stake, setStake] = useState(0.25);
-  const [topUp, setTopUp] = useState(5);
-  const [backAmt, setBackAmt] = useState(2);
-  const [paymentId, setPaymentId] = useState("");
-  const revealing = useRef(new Set<string>());
+  const [run, setRun] = useState<{ runId: string; callsign: string; turn: number; fuse: number; cleared: number; tiles: number; seatsOpen: number } | null>(null);
+  const [amount, setAmount] = useState(5);
+  const [custom, setCustom] = useState("");
+  const [showCustom, setShowCustom] = useState(false);
+  const [funding, setFunding] = useState<{ step: "idle" | "confirming" | "done" | "refused"; text: string }>({ step: "idle", text: "" });
+  const [copied, setCopied] = useState(false);
+  const [, forceRender] = useState(0);
+  const pollRef = useRef<number>(0);
 
   const api = useCallback(async (path: string, body?: unknown) => {
     const r = await fetch(SERVER + path, body === undefined ? { headers: id.headers() } : { method: "POST", headers: id.headers(), body: JSON.stringify({ ...(body as object), ...(mode === "demo" ? { user: id.user } : {}) }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok && r.status !== 202) throw new Error(friendly(j.error));
-    return j;
+    return { status: r.status, ...j };
   }, [id.headers, id.user, mode]);
 
-  const say = (s: string) => { setToast(s); setTimeout(() => setToast(""), 6000); };
-  const refreshBalance = useCallback(async () => { if (!id.user) return; try { setBalance(await api("/api/v1/fiat/balance")); } catch { /* not signed in */ } await id.refreshWallet(); if (mode === "pollar") id.loadHistory(); }, [api, id.user, id.refreshWallet, id.loadHistory, mode]);
-
+  const refreshBalance = useCallback(async () => {
+    if (id.user) { try { setBalance(await api("/api/v1/fiat/balance")); } catch { /* not signed in */ } }
+    await id.refreshWallet();
+    if (mode === "pollar") id.loadHistory();
+  }, [api, id.user, id.refreshWallet, id.loadHistory, mode]);
   useEffect(() => { fetch(SERVER + "/api/v1/treasury").then((r) => r.json()).then(setTreasury).catch(() => setTreasury(null)); }, []);
   useEffect(() => { refreshBalance(); }, [refreshBalance]);
 
-  // poll the public spectator feed; auto-reveal our mines once Byte has played the word on an armed turn
+  // the live room: the current run's name, turn, fuse, cleared tiles and open seats
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       try {
-        let rid = runId;
-        if (!rid) { const c = await fetch(SERVER + "/api/v1/current").then((r) => r.json()); if (!c.runId) return; rid = c.runId; setRunId(rid); }
-        const r = await fetch(`${SERVER}/runs/${rid}/spectate?delay=0`);   // planters act on the real, undelayed game
-        if (!r.ok) { if (r.status === 404) setRunId(null); return; }
-        const { state: s } = await r.json();
+        const c = await fetch(SERVER + "/api/v1/current").then((r) => r.json());
+        if (!c.runId) { if (alive) setRun(null); return; }
+        const { state: s } = await fetch(`${SERVER}/runs/${c.runId}/spectate?delay=0`).then((r) => r.json());
         if (!alive) return;
-        setState(s);
-        for (const [trapId, sec] of Object.entries(loadSecrets())) {
-          if (sec.runId !== rid || revealing.current.has(trapId)) continue;
-          if (!s.spoken.some((w: any) => w.word === sec.word && w.turn >= sec.armedTurn)) continue;
-          revealing.current.add(trapId);
-          api(`/runs/${rid}/reveal-fiat`, { trapId, word: sec.word, saltHex: sec.saltHex })
-            .then((res) => { if (res.status === "paid") { say(`💥 YOUR MINE "${sec.word.toUpperCase()}" FIRED · +$${(res.payoutMicro / 1e6).toFixed(2)}`); } const all = loadSecrets(); delete all[trapId]; saveSecrets(all); setSecrets(all); refreshBalance(); })
-            .catch((e) => { revealing.current.delete(trapId); console.warn("reveal", e); });
-        }
-        if (s.status !== "live") setRunId(null);
+        if (s.status !== "live") { setRun(null); return; }
+        setRun({ runId: c.runId, callsign: s.callsign || "Byte", turn: s.turn, fuse: s.fuse, cleared: s.tiles.filter((t: any) => t.cleared).length, tiles: s.tiles.length, seatsOpen: (s.seats ?? []).filter((x: any) => x.kind === "open" || x.kind === "bot").length });
       } catch { /* offline */ }
     };
-    tick();
-    const t = setInterval(tick, POLL_MS);
+    tick(); const t = setInterval(tick, POLL_MS);
     return () => { alive = false; clearInterval(t); };
-  }, [runId, api, refreshBalance]);
+  }, []);
 
-  const fired = useMemo(() => new Set((state?.traps ?? []).filter((t: any) => t.word).map((t: any) => t.word)), [state]);
+  const toggleTheme = () => { const n = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; document.documentElement.setAttribute("data-theme", n); document.documentElement.classList.toggle("dark", n === "dark"); try { localStorage.setItem("wt.theme", n); } catch { /* private */ } forceRender((x) => x + 1); };
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  useEffect(() => { document.documentElement.classList.toggle("dark", dark); }, [dark]);   // Pollar's stylesheet keys its dark palette off html.dark
 
-  // Add funds: the Pollar payment call sends USDC from the player's wallet to the game treasury, then the transaction
-  // signature goes to our server, which confirms it on Solana before crediting. Cash top-ups (ramp orders): [ROADMAP].
-  async function doTopUp() {
+  // what the page shows: live values, or the ?demo fixture
+  const signedIn = demo ? demo.signedIn : !!id.user;
+  const name = demo && demo.signedIn ? demo.name : id.displayName;
+  const address = demo && demo.signedIn ? demo.address : id.user;
+  const usdc: number | null = demo && demo.signedIn ? demo.usdc : (mode === "pollar" ? id.usdc : null);
+  const gameUsd = demo && demo.signedIn ? demo.game : (balance?.balanceMicro ?? 0) / 1e6;
+  const live = demo && demo.signedIn ? demo.run : run;
+  const amt = showCustom && custom.trim() !== "" ? Number(custom) : amount;
+  const walletEmpty = mode === "pollar" && usdc !== null && usdc < amt;
+  const canAdd = signedIn && amt > 0 && funding.step !== "confirming" && !walletEmpty && !(mode === "pollar" && !treasury?.address);
+  const rows: Row[] = demo && demo.signedIn ? [...demo.rows] : (id.txHistory.step === "loaded" ? id.txHistory.data.records.map((r: any) => rowOf(r, treasury?.address)) : []);
+
+  async function copyAddress() { if (await copyText(address)) { setCopied(true); setTimeout(() => setCopied(false), 2000); } }
+
+  /** Add funds: USDC from the Pollar wallet to the treasury (sendPayment), then the server confirms it on Solana. */
+  async function addFunds() {
+    if (!canAdd) return;
+    const micro = Math.round(amt * 1e6);
+    setFunding({ step: "confirming", text: "Confirming your payment…" });
     try {
-      if (mode === "demo") { const r = await api("/dev/credit", { amount: topUp }); say(`demo credit +$${topUp} (payment ${r.paymentId})`); refreshBalance(); return; }
+      if (mode === "demo") {
+        const r = await api("/dev/credit", { amount: amt });
+        setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` });
+        await refreshBalance(); return;
+      }
       if (!treasury?.address || !treasury.usdcMint) throw new Error("The server has no treasury address or USDC mint for this network yet.");
-      const micro = Math.round(topUp * 1e6);
-      if (!(micro > 0)) throw new Error("Choose an amount.");
-      say(`sending $${topUp.toFixed(2)} USDC to the treasury…`);
       const out = await id.sendUsdc(treasury.address, micro, treasury.usdcMint);
-      if (out.status === "error") throw new Error((out as any).details ?? (out as any).message ?? "The payment was not sent.");
-      if (out.status === "cosign_pending") throw new Error("The payment is waiting for another device's approval. Confirm it there, then paste the signature below.");
-      const r = await api("/api/v1/fiat/confirm", { signature: out.hash, amount: topUp });
-      say(r.status === "credited" ? `credited $${(r.micro / 1e6).toFixed(2)}` : `payment ${out.hash.slice(0, 8)}… is ${r.status}; the server re-checks it until it is final`);
-      refreshBalance();
-    } catch (e: any) { say(e.message); }
-  }
-  async function confirmManual() {
-    try { const r = await api("/api/v1/fiat/confirm", mode === "demo" ? { paymentId } : { signature: paymentId, amount: topUp }); say(`payment ${paymentId.slice(0, 12)}…: ${r.status}${r.duplicate ? " (already credited)" : ""}`); setPaymentId(""); refreshBalance(); }
-    catch (e: any) { say(e.message); }
-  }
-  async function plant() {
-    try {
-      if (!treasury || !runId) throw new Error("no live run");
-      const w = word.toLowerCase().replace(/[^a-z]/g, "");
-      if (w.length < 3) throw new Error("word must be 3+ letters a–z");
-      const salt = crypto.getRandomValues(new Uint8Array(32));
-      const c = hex(await commitment(w, salt, unhex(treasury.pubkeyHex)));
-      const r = await api(`/runs/${runId}/plant-fiat`, { commitmentHex: c, stake });
-      const all = loadSecrets(); all[r.trap.id] = { word: w, saltHex: hex(salt), runId, armedTurn: r.trap.armedTurn }; saveSecrets(all); setSecrets(all);
-      say(`armed "${w}" for $${stake} · live from turn ${r.trap.armedTurn} · only this browser knows the word`);
-      setWord(""); refreshBalance();
-    } catch (e: any) { say(e.message); }
-  }
-  async function back() {
-    try { if (!runId) throw new Error("no live run"); const r = await api(`/runs/${runId}/back-fiat`, { amount: backAmt }); say(`backed Byte with $${backAmt} · pool now $${r.backerTotal.toFixed(2)}`); refreshBalance(); }
-    catch (e: any) { say(e.message); }
+      if (out.status === "error") throw new Error(friendly((out as any).details ?? (out as any).message, "The payment was not sent."));
+      if (out.status === "cosign_pending") throw new Error("The payment is waiting for another device's approval.");
+      // the signature goes to our server; "pending" means not finalized yet, so keep asking until it is credited
+      const gen = ++pollRef.current;
+      for (let i = 0; i < 40; i++) {
+        const r = await api("/api/v1/fiat/confirm", { signature: out.hash, amount: amt });
+        if (r.status === 200 && r.credited !== undefined) { setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` }); await refreshBalance(); return; }
+        if (gen !== pollRef.current) return;
+        await new Promise((res) => setTimeout(res, 3000));
+      }
+      setFunding({ step: "refused", text: "The payment is taking longer than usual. Your balance updates when Solana confirms it." });
+    } catch (e: any) { setFunding({ step: "refused", text: friendly(e.message) }); }
   }
 
-  const tile = state?.tiles?.[state.position];
-  const signedIn = !!id.user;
+  const header = (
+    <header>
+      <a className="wordmark" href="/play"><img className="wm-light" src="/wordtrap-wordmark-light.png" alt="WordTrap" width={120} height={32} /><img className="wm-dark" src="/wordtrap-wordmark-dark.png" alt="WordTrap" width={120} height={32} /></a>
+      <a className="nav" href="/play">Rooms</a>
+      <a className="nav current" href="/stake/" aria-current="page">Funds</a>
+      <span className="hright">
+        {signedIn && mode === "pollar" && <span className="pill" aria-label="Pollar wallet balance"><small>Pollar wallet</small><b>{usdc === null ? "…" : usd(usdc)}</b></span>}
+        {signedIn && <span className="pill yellow" aria-label="Game balance"><small>Game balance</small><b>{usd(gameUsd)}</b></span>}
+        {mode === "pollar" && (signedIn
+          ? <button type="button" className="walletbtn" data-wt="wallet" onClick={id.openWallet} aria-label={`Wallet ${shortAddress(address)}, open wallet`}><i aria-hidden="true"></i>{shortAddress(address)}</button>
+          : <button type="button" className="walletbtn" data-wt="wallet" onClick={id.openSignIn}><i aria-hidden="true"></i>Sign in</button>)}
+        <button id="themeBtn" type="button" aria-pressed={dark} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} onClick={toggleTheme}>
+          {dark ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
+                : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3a9 9 0 1 0 6 15.5A8 8 0 0 1 15 3z"/></svg>}
+        </button>
+      </span>
+    </header>
+  );
+
+  if (!signedIn) {
+    return (
+      <div className="wrap">
+        {header}
+        <div className="strip"><h1>Sign in to add funds</h1></div>
+        <section className="panel hero" aria-labelledby="heroh">
+          <h2 id="heroh">Your Pollar wallet pays for mines and backing</h2>
+          <p>Sign in with Google and Pollar makes you a wallet. Move USDC from it into the game, then set traps or back Byte in any room.</p>
+          <div className="actions">
+            {mode === "pollar"
+              ? <><button type="button" className="btn blue" onClick={id.signInGoogle}>Sign in with Google</button><button type="button" className="btn outline" onClick={id.openSignIn}>Other ways to sign in</button></>
+              : <button type="button" className="btn blue" onClick={() => { id.setDemoUser(); forceRender((x) => x + 1); }}>Play as guest</button>}
+            <a className="btn text" href="/play">Play as guest with test funds</a>
+          </div>
+          {id.pollarErr && <p className="status err">{id.pollarErr}</p>}
+        </section>
+      </div>
+    );
+  }
+
   return (
-    <>
-      <header>
-        <a className="logo" href="/play"><img src="/wordtrap-wordmark-dark.png" alt="WordTrap" width={120} height={32} /><b>· STAKE</b></a>
-        {runId && <a className="dim" href={`${SERVER}/watch/${runId}`} target="_blank" rel="noreferrer">watch run {runId} ↗</a>}
-        {mode === "pollar" && signedIn && <span className="dim">wallet USDC {id.usdc === null ? "…" : `$${id.usdc.toFixed(2)}`} · game balance ${((balance?.balanceMicro ?? 0) / 1e6).toFixed(2)}</span>}
-        {mode === "pollar" && <WalletButton />}
-        <span className="meta">{state ? `turn ${state.turn} · fuse ${state.fuse} · ${state.status}` : "waiting for a run…"}</span>
-      </header>
-      <main>
-        {mode === "demo" && <div className="banner wide">DEMO CREDITS — no Pollar key configured (VITE_POLLAR_PUBLISHABLE_KEY). Balances are play money from /dev/credit; everything else is the real flow.</div>}
-        {id.pollarErr && <div className="banner err wide">{id.pollarErr}</div>}
-
-        <section className="panel">
-          <div className="label">You</div>
-          {mode === "pollar" ? (
-            signedIn ? <div className="row"><span className="ok" title={id.user}>{id.label}</span><button className="ghost" onClick={id.signOut}>sign out</button></div>
-              : <div className="row"><button onClick={id.signInGoogle}>Sign in with Google</button><button className="ghost" onClick={id.openSignIn}>Other ways to sign in</button><span className="dim">creates your Pollar wallet</span></div>
-          ) : (
-            <div className="row">
-              {id.user ? <span className="ok" title={id.user}>{id.label}</span> : <button onClick={() => id.setDemoUser()}>Play as guest</button>}
-              <button className="ghost" onClick={() => id.connectWallet().then(() => say("wallet connected")).catch((e) => say(e.message))}>or connect a Solana wallet</button>
-            </div>
-          )}
-          <div className="label" style={{ marginTop: 14 }}>Pollar wallet balance</div>
-          <div className="big">${balance ? (balance.balanceMicro / 1e6).toFixed(2) : "0.00"}</div>
-          <div className="row">
-            <input type="number" min={1} step={1} value={topUp} onChange={(e) => setTopUp(Number(e.target.value))} style={{ width: 90 }} />
-            <button className="safe" disabled={!signedIn} onClick={doTopUp}>Add test funds</button>
+    <div className="wrap">
+      {header}
+      {mode === "demo" && <div className="banner"><b>Test funds only.</b> No Pollar key is configured, so balances are play money.</div>}
+      {id.pollarErr && <div className="banner err">{id.pollarErr}</div>}
+      <div className="strip"><h1>Your funds</h1></div>
+      <div className="grid">
+        <section className="panel" aria-labelledby="acch">
+          <h2 id="acch">Your account</h2>
+          <div className="who">
+            <span className="name">{name || shortAddress(address)}</span>
+            <button type="button" className="addr" onClick={copyAddress} aria-label={`Copy wallet address ${address}`}>{copied ? "Copied" : shortAddress(address)}<span aria-hidden="true">⧉</span></button>
+            {mode === "pollar" ? <button type="button" className="btn text" onClick={() => { id.signOut(); forceRender((x) => x + 1); }}>Sign out</button> : <span className="empty">Guest</span>}
           </div>
-          {mode === "pollar" && <div className="row"><input value={paymentId} placeholder="transaction signature (re-check)" onChange={(e) => setPaymentId(e.target.value)} /><button className="ghost" disabled={!paymentId} onClick={confirmManual}>confirm</button></div>}
-          <div className="dim" style={{ marginTop: 8, fontSize: 11 }}>Credits only land after the server confirms the USDC transfer on Solana{treasury?.network ? ` (${treasury.network})` : ""}. Treasury: {treasury ? `${(treasury.address ?? treasury.pubkeyHex).slice(0, 10)}…` : "…"}. Cash top-ups: roadmap.</div>
-          {mode === "pollar" && signedIn && (
-            <div style={{ marginTop: 14 }}>
-              <div className="label">Your activity <button className="ghost" onClick={id.loadHistory}>refresh</button> <button className="ghost" onClick={id.openTxHistory}>open</button></div>
-              {id.txHistory.step === "loaded"
-                ? (id.txHistory.data.records.length
-                  ? <ul className="activity">{id.txHistory.data.records.map((r) => <li key={r.id}><span>{r.summary}</span><span className="dim">{r.status.toLowerCase()} · {new Date(r.createdAt).toLocaleString()}</span></li>)}</ul>
-                  : <div className="dim">No wallet activity yet.</div>)
-                : id.txHistory.step === "error" ? <div className="dim">{id.txHistory.message}</div> : <div className="dim">Loading…</div>}
-            </div>
-          )}
+          <div className="tiles">
+            <div className="tile"><div className="k">{mode === "pollar" ? "Pollar wallet" : "Test funds"}</div><div className="v">{mode === "pollar" ? (usdc === null ? "…" : usd(usdc)) : usd(treasury?.guestStartFunds ?? 10)}</div><div className="s">{mode === "pollar" ? `USDC on Solana ${treasury?.network ?? "devnet"}` : "play money, added below"}</div></div>
+            <div className="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="square"><path d="M3 12h16M13 5l7 7-7 7"/></svg></div>
+            <div className="tile yellow"><div className="k">Game balance</div><div className="v">{usd(gameUsd)}</div><div className="s">What you can stake</div></div>
+          </div>
+          <p className="sentence">Move USDC from your Pollar wallet into the game to play.</p>
+          <hr className="divider" />
+          <h2 id="addh">Add funds</h2>
+          {walletEmpty && <p className="notice" role="status">Your Pollar wallet is empty. <a href={FAUCET} target="_blank" rel="noreferrer">Get test USDC</a> (devnet test money), then come back.</p>}
+          <div className="chips" role="group" aria-label="Amount">
+            {CHIPS.map((v) => <button key={v} type="button" className={`chip${!showCustom && amount === v ? " on" : ""}`} aria-pressed={!showCustom && amount === v} onClick={() => { setAmount(v); setShowCustom(false); }}>${v}</button>)}
+            {showCustom
+              ? <input className="custom" inputMode="decimal" placeholder="0.00" aria-label="Custom amount in dollars" autoFocus value={custom} onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, ""))} />
+              : <button type="button" className="chip dashed" onClick={() => setShowCustom(true)}>Other amount</button>}
+          </div>
+          <div className="actions">
+            <button type="button" className="btn red" disabled={!canAdd} aria-busy={funding.step === "confirming"} onClick={addFunds}>{`Add ${money(amt > 0 ? amt : 0)} to game`}</button>
+            {mode === "pollar" && <button type="button" className="btn outline" onClick={id.openSend}>Withdraw</button>}
+          </div>
+          {funding.step === "confirming" && <div className="status" role="status" aria-live="polite">{funding.text}<div className="progress" aria-hidden="true"></div></div>}
+          {funding.step === "done" && <p className="status ok" role="status" aria-live="polite">{funding.text}</p>}
+          {funding.step === "refused" && <p className="status err" role="alert">{funding.text}</p>}
+          <p className="foot">{mode === "pollar" ? "Pollar pays the network fee. Your balance updates in about 20 seconds." : "Play money for this server only."}</p>
         </section>
 
-        <section className="panel">
-          <div className="label">Back Byte · you sweep the mines that never fire</div>
-          <div className="dim">Pool ${state ? state.backerTotal.toFixed(2) : "0.00"} · mines staked ${state ? state.trapTotal.toFixed(2) : "0.00"}</div>
-          <div className="row">
-            {[1, 2, 5, 10].map((v) => <button key={v} className={backAmt === v ? "" : "ghost"} onClick={() => setBackAmt(v)}>${v}</button>)}
-            <button className="safe" disabled={!signedIn || !runId || state?.status !== "live"} onClick={back}>Back Byte ${backAmt}</button>
-          </div>
-        </section>
-
-        <section className="panel wide">
-          <div className="label">Plant a mine · {tile ? `"${tile.prompt}"` : "no live run"}</div>
-          <div className="hand">
-            {(state?.hand ?? []).map((w: string) => <div key={w} className={`card ${word === w ? "sel" : ""} ${fired.has(w) ? "boom" : ""}`} onClick={() => setWord(w)}>{w}</div>)}
-          </div>
-          <div className="row">
-            <input value={word} placeholder="or any word Byte might play" onChange={(e) => setWord(e.target.value)} />
-            {[0.1, 0.25, 0.5, 1].map((v) => <button key={v} className={stake === v ? "" : "ghost"} onClick={() => setStake(v)}>${v}</button>)}
-            <button className="hot" disabled={!signedIn || !runId || !word || state?.status !== "live"} onClick={plant}>Arm mine ${stake}</button>
-          </div>
-          <div className="dim" style={{ fontSize: 11, marginTop: 6 }}>Mines arm on Byte's next turn. The word and salt stay in this browser; when Byte plays the card, this page reveals it and the treasury pays you stake + bounty.</div>
-        </section>
-
-        <section className="panel wide">
-          <div className="label">Your mines</div>
-          <div className="mines">
-            {(balance?.traps ?? []).length === 0 && <span className="dim">none yet</span>}
-            {(balance?.traps ?? []).map((t: any) => (
-              <div key={t.trapId} className={`mine ${t.status === "paid" ? "paid" : secrets[t.trapId] ? "wait" : ""}`}>
-                <span>{secrets[t.trapId]?.word ? `“${secrets[t.trapId].word}”` : "▒▒▒▒▒▒"} · run {t.runId}</span>
-                <span>${(t.stake / 1e6).toFixed(2)} · {t.status === "paid" ? <b className="ok">paid +${(t.payout / 1e6).toFixed(2)}</b> : secrets[t.trapId] ? <span className="warn">armed · watching</span> : <span className="dim">armed · salt not on this device</span>}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      </main>
-      {toast && <div className="banner" style={{ position: "fixed", bottom: 16, left: 16, right: 16, textAlign: "center" }} onClick={() => setToast("")}>{toast}</div>}
-    </>
+        <div className="stack">
+          <section className="panel blue live" aria-labelledby="liveh">
+            {live ? (
+              <>
+                <span className="tag">Turn {live.turn}</span>
+                <div className="eyebrow"><i aria-hidden="true"></i>Live room</div>
+                <h2 id="liveh">{live.callsign} is playing</h2>
+                <div className="facts">
+                  <div>Fuse left<b className="red">{live.fuse}</b></div>
+                  <div>Tiles cleared<b>{live.cleared} of {live.tiles}</b></div>
+                  <div>Seats open<b>{live.seatsOpen}</b></div>
+                </div>
+                <div className="pair">
+                  <a className="btn yellow" href={`/side/${encodeURIComponent(live.runId)}`}>Set traps</a>
+                  <a className="btn blue" href={`/side/${encodeURIComponent(live.runId)}`}>Back Byte</a>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="eyebrow"><i aria-hidden="true"></i>Live room</div>
+                <h2 id="liveh">No room is live right now</h2>
+                <p className="empty">A room opens when a Byte agent starts a run, or start one yourself from the lobby.</p>
+                <a className="btn yellow" href="/play">See rooms</a>
+              </>
+            )}
+          </section>
+          <section className="panel" aria-labelledby="acth">
+            <h2 id="acth" className="rule">Your activity</h2>
+            {rows.length
+              ? <ul className="rows">{rows.map((r) => <li key={r.id}><span>{r.text}</span><span className={`amt${r.neg ? " neg" : ""}`}>{r.amount ?? ""}</span><time>{r.at}</time></li>)}</ul>
+              : <p className="empty">{mode === "pollar" && id.txHistory.step === "loading" ? "Loading…" : "No activity yet. Your top-ups and payouts will show here."}</p>}
+          </section>
+        </div>
+      </div>
+    </div>
   );
 }

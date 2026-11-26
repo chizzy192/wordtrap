@@ -199,7 +199,7 @@ test("10: the private flag is undelayed and sticky: the host sets it and it hold
   assert.equal((await refused.json()).error, "Only the host can make the room private.");
   assert.equal((await fetch(`${base}/runs/${b.runId}/spectate`, { headers: hdr(other) }).then((r) => r.json())).room.private, true, "still private");
   // an unidentified request (what the page used to send) is refused too, and changes nothing
-  assert.equal((await fetch(`${base}/runs/${b.runId}/room`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ private: false }) })).status, 400);
+  assert.equal((await fetch(`${base}/runs/${b.runId}/room`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ private: false }) })).status, 401);
   const list = await fetch(`${base}/api/v1/rooms`).then((r) => r.json());
   assert.deepEqual(list.map((r: any) => r.runId), [a.runId], "the private room is not listed");
   const quick = await fetch(`${base}/api/v1/rooms/quick`, { method: "POST", headers: hdr("guest-QUICK009"), body: "{}" }).then((r) => r.json());

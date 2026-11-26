@@ -38,7 +38,7 @@ test("a client that disconnects mid-request during /play, /spectate and /plant-f
   // /plant-fiat: half a JSON body
   await dropMidRequest(port, `POST /runs/${runId}/plant-fiat HTTP/1.1\r\nHost: x\r\nx-user: guest-DROPDROP1\r\nContent-Type: application/json\r\nContent-Length: 120\r\n\r\n{"commitmentHex":"ab`);
   await sleep(150);
-  assert.deepEqual(await healthy(), { ok: true });
+  assert.equal((await healthy()).ok, true);
   const after = await current();
   assert.equal(after.turn, before.turn, "no move was applied");
   assert.deepEqual(after.traps, before.traps, "no mine was planted");
@@ -72,7 +72,7 @@ test("a bot whose plant call fails, or whose hook throws, cannot fail Byte's mov
   assert.equal(after.turn, before.turn + 1, "Byte's move went through");
   assert.equal(after.spoken.length, 1);
   assert.ok(errors.some((l) => /hook failed/.test(l)), "the failure was logged, not swallowed");
-  assert.deepEqual(await healthy(), { ok: true });
+  assert.equal((await healthy()).ok, true);
   chain.plantTrap = realPlant;
   await app.close();
 });
@@ -92,7 +92,7 @@ test("a failed oracle call during buy_hint burns the fuse, leaves hint empty, an
   assert.equal(hint.fuse, before.fuse - 3, "the cost is still paid");
   assert.deepEqual(hint.hint, {}, "no scores, run continues");
   assert.equal(hint.status, "live");
-  assert.deepEqual(await healthy(), { ok: true });
+  assert.equal((await healthy()).ok, true);
   const feed = await realFetch(`${base}/runs/${runId}/spectate`).then((r) => r.json());
   assert.ok(feed.events.some((e: any) => e.type === "action" && /hint failed/.test(e.detail)), "the failure is visible in the feed");
   await app.close();

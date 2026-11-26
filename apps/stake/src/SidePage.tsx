@@ -4,7 +4,7 @@
 // Identity: the wallet address (Pollar / connected wallet) or a guest id made once; shown as the
 // display name or the short address. Watching never needs an account.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useIdentity, shortAddress, friendly } from "./App";
+import { useIdentity, shortAddress, friendly, copyText, roomLink } from "./App";
 
 type Mode = "demo" | "pollar";
 const SERVER = (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "";
@@ -54,6 +54,12 @@ export function Side({ mode }: { mode: Mode }) {
   const [nameMsg, setNameMsg] = useState("");
   const [fundsMsg, setFundsMsg] = useState("");
   const [googleHelp, setGoogleHelp] = useState("");
+  const [copied, setCopied] = useState(false);
+  async function copyLink() {
+    if (!runId) return;
+    if (await copyText(roomLink(runId))) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    else setMsg("Couldn't copy. The link is " + roomLink(runId));
+  }
   const pending = useRef<null | "back" | "seat">(null);
   const prevBonus = useRef<number | null>(null);
   const prevOpen = useRef<boolean | null>(null);
@@ -163,8 +169,9 @@ export function Side({ mode }: { mode: Mode }) {
     } catch { setMsg("The server didn't answer. Try again in a moment."); setBusy(false); return; }
     location.href = `/watch/${runId}?plant=1`;
   }
-  const toggleTheme = () => { const n = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; document.documentElement.setAttribute("data-theme", n); try { localStorage.setItem("wt.theme", n); } catch { /* private */ } forceRender((x) => x + 1); };
+  const toggleTheme = () => { const n = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"; document.documentElement.setAttribute("data-theme", n); document.documentElement.classList.toggle("dark", n === "dark"); try { localStorage.setItem("wt.theme", n); } catch { /* private */ } forceRender((x) => x + 1); };
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  useEffect(() => { document.documentElement.classList.toggle("dark", dark); }, [dark]);   // Pollar's stylesheet keys its dark palette off html.dark
 
   const seats: any[] = state?.seats ?? [{ kind: "open" }, { kind: "open" }, { kind: "open" }, { kind: "open" }];
   const free = seats.filter((s) => s.kind === "open" || s.kind === "bot").length;   // bots step aside for people
@@ -268,7 +275,7 @@ export function Side({ mode }: { mode: Mode }) {
             <div className="seats" role="list" aria-label="Seats">
               {seats.map((s, i) => <span key={i} role="listitem" className={`seat ${s.kind}`} title={s.address ?? s.name ?? ""} aria-label={s.kind === "open" ? `Seat ${i + 1}, open` : s.kind === "bot" ? `Seat ${i + 1}, bot` : `Seat ${i + 1}, taken by ${label(s.address ?? s.name)}`}>{s.kind === "open" ? "Open" : s.kind === "bot" ? "Bot" : label(s.address ?? s.name)}</span>)}
             </div>
-            <p className="soft">{free} of 4 seats free</p>
+            <p className="soft">{free} of 4 seats free <button type="button" className="btn text" onClick={copyLink}>{copied ? "Link copied" : "Copy room link"}</button></p>
             <ul className="facts">
               <li><b>{usd(armedStake)}</b> is armed on {armed.length} hidden word{armed.length === 1 ? "" : "s"}</li>
               <li>A mine that goes off pays <b>{MULTIPLIER} times</b> its stake</li>
