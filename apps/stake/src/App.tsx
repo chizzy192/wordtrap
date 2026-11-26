@@ -336,7 +336,7 @@ export function App({ mode }: { mode: Mode }) {
   const amt = showCustom && custom.trim() !== "" ? Number(custom) : amount;
   const walletEmpty = mode === "pollar" && usdc !== null && usdc < amt;
   const canAdd = signedIn && amt > 0 && funding.step !== "confirming" && !walletEmpty && !(mode === "pollar" && !treasury?.address);
-  const creditedSigs = useMemo(() => new Set<string>((balance?.history ?? []).filter((h: any) => h.reason === "pollar payment" && h.ref).map((h: any) => String(h.ref))), [balance]);
+  const creditedSigs = useMemo(() => new Set<string>([...(balance?.deposits ?? []), ...(balance?.history ?? []).filter((h: any) => (h.reason === "pollar payment" || h.reason === "deposit") && h.ref).map((h: any) => String(h.ref))].map(String)), [balance]);
   const rows: Row[] = demo && demo.signedIn ? [...demo.rows] : (id.txHistory.step === "loaded" ? id.txHistory.data.records.map((r: any) => rowOf(r, treasury?.address, creditedSigs)) : []);
   const confirming = funding.step === "confirming" || pending.length > 0;
 

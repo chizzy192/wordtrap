@@ -81,6 +81,7 @@ export class RunManager {
   announce(run: Run, e: FeedEvent) { run.match.emit("feed", e); }
 
   /** Live public rooms for the lobby, in quick-play order: most people first, then newest. */
+  all(): Run[] { return [...this.runs.values()]; }
   listRooms(): Run[] {
     return [...this.runs.values()]
       .filter((r) => !r.match.finished() && !r.room.private)

@@ -7,6 +7,7 @@ import { MockChain } from "../src/chain/mock.ts";
 import { createApp } from "../src/main.ts";
 import { PollarServerApi, findSolanaAddress, shapeOf, isSolanaAddress, toMicro, microToUsd, USDC_MINTS, base58, MICRO, FiatLedger } from "../src/fiat.ts";
 import { fmtUsd, fromBase, toBase, unitsOf } from "../../stake/src/units.ts";
+import { bindWallet } from "../src/store.ts";
 
 const SECRET = "sec_testnet_mock0000000000000000";
 const DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
@@ -104,9 +105,9 @@ test("no Solana wallet and binding off (the default): a plain sentence, and POST
     const bind = await fetch(`${base}/api/v1/fiat/wallet`, { method: "POST", headers: hdr("tok"), body: JSON.stringify({ address: SOL }) });
     assert.equal(bind.status, 403);
     assert.equal((await bind.json()).error, "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.");
-    assert.equal(app.ledger.walletOf("usr_1"), null, "nothing bound");
-    // even a binding left in the ledger file is ignored while the flag is off
-    app.ledger.bindWallet("usr_1", SOL);
+    assert.equal((await app.players.playerByUser("usr_1"))?.wallet ?? null, null, "nothing bound");
+    // even a binding left in the players store is ignored while the flag is off
+    await app.players.upsertPlayer({ userId: "usr_1", wallet: SOL });
     assert.equal((await fetch(`${base}/api/v1/fiat/balance`, { headers: hdr("tok") })).status, 428);
   } finally { await app.close(); await pol.close(); }
 });
@@ -132,10 +133,10 @@ test("binding (ALLOW_CLIENT_WALLET_BINDING=1 only): the page's address is bound 
     // never changeable from the client
     const change = await fetch(`${base}/api/v1/fiat/wallet`, { method: "POST", headers: hdr("tok"), body: JSON.stringify({ address: SOL2 }) });
     assert.equal(change.status, 200); assert.equal((await change.json()).wallet, SOL, "a second claim does not change the binding");
-    assert.equal(app.ledger.walletOf("usr_1"), SOL);
+    assert.equal((await app.players.playerByUser("usr_1"))?.wallet, SOL);
     // one user per address
-    assert.throws(() => app.ledger.bindWallet("usr_2", SOL), /already linked to another Pollar account/);
-    assert.throws(() => app.ledger.bindWallet("usr_1", SOL2), /already linked to a different wallet/);
+    await assert.rejects(() => bindWallet(app.players, "usr_2", SOL), /already linked to another Pollar account/);
+    await assert.rejects(() => bindWallet(app.players, "usr_1", SOL2), /already linked to a different wallet/);
     // deposits: only the on-chain sender equal to the bound address credits
     m.transfer(SIG(1), SOL2, treasury, 5 * MICRO);
     const other = await fetch(`${base}/api/v1/fiat/confirm`, { method: "POST", headers: hdr("tok"), body: JSON.stringify({ signature: SIG(1), amount: 5 }) });

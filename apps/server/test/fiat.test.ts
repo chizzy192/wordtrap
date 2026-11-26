@@ -147,9 +147,12 @@ test("restart: the ledger is rebuilt from data/fiat-ledger.json with balances an
   assert.equal(again.payment("pay_r1")?.status, "credited");
   assert.equal(again.creditFromPayment("pay_r1", "alice", 4 * MICRO).duplicate, true);
 
+  // the restarted server has no run to settle that mine, so its stake comes back on startup (kind refund, once)
   const second = await boot({ ledgerPath: path });
   const balance = await fetch(`${second.base}/api/v1/fiat/balance?user=alice`).then((r) => r.json());
-  assert.equal(balance.balanceMicro, 2_500_000);
+  assert.equal(balance.balanceMicro, 4_000_000);
+  assert.ok(balance.history.some((h: any) => h.reason === "refund" && h.delta === 1_500_000 && h.ref === `refund:${runId}:plant:${planted.trap.commitmentHex?.slice(0, 16) ?? ""}`.replace(/:$/, "")) || balance.history.some((h: any) => h.reason === "refund" && h.delta === 1_500_000), "refund row");
+  assert.deepEqual((await second.app.startup()).refunds, [], "refunded once");
   assert.equal(balance.traps[0].trapId, planted.trap.id);
   await second.app.close();
 });

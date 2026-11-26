@@ -19,7 +19,8 @@ import { RunManager, type Run } from "./runs.ts";
 import { handleRisk, requirement, simVerifier, facilitatorVerifier } from "./oracle.ts";
 import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
-import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58, isSolanaAddress, confirmPayment, confirmUsdcPayment, reconcileDeposits, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway, type PollarSession, type SolanaRpc } from "./fiat.ts";
+import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58, isSolanaAddress, confirmPayment, confirmUsdcPayment, reconcileDeposits, pollarFromEnv, toMicro, fromMicro, microToUsd, MICRO, type PollarGateway, type PollarSession, type SolanaRpc } from "./fiat.ts";
+import { MemoryMoneyStore, SupabaseMoneyStore, bindWallet, refundOrphans, migrateLedger, type MoneyStore, type SupabaseLike } from "./store.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
 import { MemoryProfileStore, validateName, shortAddress, type ProfileStore } from "./profiles.ts";
 import { RoomError } from "./rooms.ts";
@@ -64,6 +65,9 @@ export interface AppOptions {
   rpc?: SolanaRpc;
   /** USDC mint for payments. Default: USDC_MINT env, else Circle's mint for the cluster RPC_URL points at. */
   usdcMint?: string;
+  /** Durable money for Pollar players: a Supabase client (or a fake in tests). Default: SUPABASE_URL +
+   *  SUPABASE_SERVICE_ROLE_KEY from the environment; `null` forces memory. Guests never touch it. */
+  supabase?: SupabaseLike | null;
   /** Let the funds page bind the wallet address the SDK shows when Pollar's server side gives none (env
    *  ALLOW_CLIENT_WALLET_BINDING=1). Off by default: a client could bind another player's address first. */
   allowClientWalletBinding?: boolean;
@@ -79,7 +83,7 @@ export interface AppOptions {
   houseDelayMs?: number;
 }
 
-export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
+export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; store: MoneyStore | null; players: MoneyStore; port(): number; listen(port: number): Promise<number>; close(): Promise<void>; startup(): Promise<{ refunds: { user: string; micro: number; ref: string }[]; migrated: { deposits: number; balances: number } | null }> }
 const LEDGER_DEFAULT = fileURLToPath(new URL("../../../data/fiat-ledger.json", import.meta.url));
 /** Whether apps/stake was built with VITE_POLLAR_PUBLISHABLE_KEY: its index.html carries <meta name="wt-pollar" content="configured|missing">. */
 async function stakeBuildPollar(): Promise<"configured" | "missing" | "not built"> {
@@ -133,6 +137,19 @@ export function createApp(o: AppOptions = {}): App {
   const guestStartFunds = Math.max(0, o.guestStartFunds ?? (Number.isFinite(envGuest) ? envGuest : 10));
   const ledger = new FiatLedger(o.ledgerPath === undefined ? (process.env.FIAT_LEDGER_PATH ?? LEDGER_DEFAULT) : o.ledgerPath);
   const pollar = o.pollar ?? pollarFromEnv();
+  // Money: Pollar players' balances live in Supabase when it is configured; guests' test funds and demo mode stay in memory.
+  const memStore = new MemoryMoneyStore(ledger);
+  const supa: SupabaseMoneyStore | null = o.supabase === undefined ? SupabaseMoneyStore.fromEnv() : (o.supabase ? new SupabaseMoneyStore(o.supabase) : null);
+  const isGuest = (u: string) => pollar.kind !== "pollar" || u.startsWith("guest-");
+  const storeFor = (user: string): MoneyStore => (supa && !isGuest(user) ? supa : memStore);
+  const players: MoneyStore = supa ?? memStore;                 // Pollar players' wallet + display name
+  /** Game-driven money (bounties, payouts, settle marks): applied now, or queued for the retry loop when the store is down. */
+  async function moneyLater(user: string, delta: number, kind: string, ref: string) {
+    try { await storeFor(user).applyDelta(user, delta, kind, ref); }
+    catch (e) { console.warn(`[fiat] ${kind} ${ref} queued for retry:`, (e as Error).message); ledger.enqueue({ user, delta, kind, ref }); }
+  }
+  const planted = new Map<string, any>();                       // plant ref → trap, so a retried plant is not charged or planted twice
+  const backCount = new Map<string, number>();                  // runId:user → backs so far (each back gets its own ref)
   const rpc = o.rpc ?? new JsonRpc(process.env.RPC_URL ?? "https://api.devnet.solana.com");
   const allowClientWalletBinding = o.allowClientWalletBinding ?? process.env.ALLOW_CLIENT_WALLET_BINDING === "1";
   const NO_WALLET = "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.";
@@ -158,8 +175,10 @@ export function createApp(o: AppOptions = {}): App {
       // Fiat mines: when the treasury's trap fires, pay the viewer who owns it (idempotent per trap).
       run.chain.onTrapFired((e) => {
         // runs inside the chain's event emit; a ledger write failure (disk full, bad file) must not break the reveal
-        try { if (ledger.trapOwner(e.trap.id)) ledger.payTrap(e.trap.id, Math.round(e.payout * MICRO)); }
-        catch (err) { console.error(`[fiat] could not credit trap ${e.trap.id}:`, (err as Error).stack ?? err); }
+        try {
+          const t = ledger.payTrap(e.trap.id, Math.round(e.payout * MICRO));
+          if (t) void moneyLater(t.user, t.payout!, "bounty", `${run.id}:bounty:${e.trap.id}`);
+        } catch (err) { console.error(`[fiat] could not credit trap ${e.trap.id}:`, (err as Error).stack ?? err); }
       });
       const crowd = o.sim ? (o.crowd === false || o.crowd === undefined ? true : o.crowd) : o.crowd;
       if (!crowd) return;
@@ -173,9 +192,13 @@ export function createApp(o: AppOptions = {}): App {
   const retry = setInterval(async () => {
     for (const { id, user, micro } of ledger.pendingPayments()) {
       try {
-        if (pollar.kind === "pollar") await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, id, { userId: "", wallet: user, network: "", expiresAt: 0 }, micro);
+        if (pollar.kind === "pollar") await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, id, { userId: "", wallet: user, network: "", expiresAt: 0 }, micro, storeFor(user));
         else await confirmPayment(ledger, pollar as MockPollar, id, user);
       } catch (e) { console.warn(`[fiat] pending payment ${id} still unconfirmed:`, (e as Error).message); }   // stays pending (or was marked failed), never credited
+    }
+    for (const job of ledger.queued()) {                          // game money that could not reach the store earlier
+      try { await storeFor(job.user).applyDelta(job.user, job.delta, job.kind, job.ref); ledger.dequeue(job.ref); }
+      catch (e) { console.warn(`[fiat] ${job.kind} ${job.ref} still queued:`, (e as Error).message); }
     }
   }, 30_000);
   retry.unref();
@@ -187,15 +210,15 @@ export function createApp(o: AppOptions = {}): App {
    *  Pollar once, then served from the cache), and when a wallet is bound. */
   function reconcileSoon(session: PollarSession) {
     if (pollar.kind !== "pollar" || !session.wallet) return;
-    (async () => { try { await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, session, { log: console.log }); } catch (e) { console.warn("[fiat] reconciliation failed:", (e as Error).message); } })();
+    (async () => { try { await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, session, { log: console.log, store: storeFor(session.wallet!) }); } catch (e) { console.warn("[fiat] reconciliation failed:", (e as Error).message); } })();
   }
   /** The verified session with its Solana wallet: from Pollar's verify content, else Pollar's users lookup (inside
    *  verifySession), else the address this user bound through POST /api/v1/fiat/wallet. */
   async function sessionOf(token: string, o: { allowUnbound?: boolean } = {}): Promise<PollarSession> {
     const s = await pollar.verifySession(token);
-    if (!s.wallet && allowClientWalletBinding) s.wallet = ledger.walletOf(s.userId);
+    if (!s.wallet && allowClientWalletBinding) s.wallet = (await players.playerByUser(s.userId))?.wallet ?? null;
     if (!s.wallet && !o.allowUnbound) throw new FiatError(allowClientWalletBinding ? "We could not read your Solana wallet from Pollar. Open the funds page so it can send your wallet address." : NO_WALLET, 428);
-    if (s.fresh) reconcileSoon(s);
+    if (s.fresh && s.wallet) { players.upsertPlayer({ userId: s.userId, wallet: s.wallet }).catch(() => {}); reconcileSoon(s); }
     return s;
   }
   async function whoIs(req: IncomingMessage, body: Record<string, any>): Promise<{ id: string; session?: PollarSession }> {
@@ -210,7 +233,7 @@ export function createApp(o: AppOptions = {}): App {
     return { id: u };
   }
   const identify = async (req: IncomingMessage, body: Record<string, any>) => (await whoIs(req, body)).id;
-  const bal = (user: string) => ({ user, balanceMicro: ledger.balance(user), balanceUsd: fromMicro(ledger.balance(user)) });
+  const bal = async (user: string) => { const m = await storeFor(user).balance(user); return { user, balanceMicro: m, balanceUsd: fromMicro(m) }; };
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
@@ -225,7 +248,8 @@ export function createApp(o: AppOptions = {}): App {
         if (pollar.kind !== "pollar") pollarMissing.push("POLLAR_SECRET_KEY");
         const stakeBuild = await stakeBuildPollar();
         if (stakeBuild !== "configured") pollarMissing.push(`VITE_POLLAR_PUBLISHABLE_KEY (build time, apps/stake${stakeBuild === "not built" ? " not built" : ""})`);
-        return json(res, 200, { ok: true, pollar: pollarMissing.length ? "missing" : "configured", pollarMissing, stakeBuild });
+        const storage = supa ? ((await supa.ping()) ? "supabase" : "supabase-unreachable") : "memory";
+        return json(res, 200, { ok: true, pollar: pollarMissing.length ? "missing" : "configured", pollarMissing, stakeBuild, storage });
       }
 
       // ---- lobby ----
@@ -309,18 +333,21 @@ export function createApp(o: AppOptions = {}): App {
       }
       if (p === "/api/v1/profile") {
         const b = req.method === "PUT" || req.method === "POST" ? await readJson(req) : Object.fromEntries(url.searchParams);
-        const address = await identify(req, b);           // the wallet address / guest id is the identity
+        const who = await whoIs(req, b);                 // the wallet address / guest id is the identity
+        const address = who.id;
+        const durable = !!supa && !isGuest(address);     // Pollar players: players(user_id, wallet, display_name)
         if (req.method === "GET") {
-          const prof = await profiles.get(address);
-          if (prof?.name) nameCache.set(address, prof.name);
-          return json(res, 200, { address, name: prof?.name ?? null, hasName: !!prof?.name });
+          const name = durable ? (await supa!.player(address))?.name ?? null : (await profiles.get(address))?.name ?? null;
+          if (name) nameCache.set(address, name);
+          return json(res, 200, { address, name, hasName: !!name });
         }
         if (req.method === "PUT" || req.method === "POST") {
           const v = validateName(b.name);
           if (!v.ok) return json(res, 400, { error: v.error });
-          const prof = await profiles.put(address, v.name);
-          nameCache.set(address, prof.name!);
-          return json(res, 200, { address, name: prof.name, hasName: true });
+          if (durable) await supa!.upsertPlayer({ userId: who.session!.userId, wallet: address, name: v.name });
+          else await profiles.put(address, v.name);
+          nameCache.set(address, v.name);
+          return json(res, 200, { address, name: v.name, hasName: true });
         }
         return json(res, 405, { error: "GET or PUT" });
       }
@@ -338,7 +365,8 @@ export function createApp(o: AppOptions = {}): App {
       }
       if (p === "/api/v1/fiat/balance" && req.method === "GET") {
         const user = await identify(req, Object.fromEntries(url.searchParams));
-        return json(res, 200, { ...bal(user), mode: pollar.kind, traps: ledger.trapsOf(user), history: ledger.history(user, 20) });
+        const st = storeFor(user);
+        return json(res, 200, { ...(await bal(user)), mode: pollar.kind, storage: st.kind, traps: ledger.trapsOf(user), history: await st.history(user, 20), deposits: await st.depositsOf(user) });
       }
       if (p === "/api/v1/fiat/wallet" && req.method === "POST") {
         // Last resort, used only when Pollar's server side gives no Solana address for this user: the page sends the
@@ -350,10 +378,10 @@ export function createApp(o: AppOptions = {}): App {
         if (!m) throw new FiatError("Sign in with Google first.", 401);
         const b = await readJson(req);
         const s = await sessionOf(m[1].trim(), { allowUnbound: true });
-        if (s.wallet) return json(res, 200, { wallet: s.wallet, source: ledger.walletOf(s.userId) === s.wallet ? "bound" : "pollar" });
+        if (s.wallet) return json(res, 200, { wallet: s.wallet, source: (await players.playerByUser(s.userId))?.wallet === s.wallet ? "bound" : "pollar" });
         const address = String(b.address ?? "").trim();
         if (!isSolanaAddress(address)) throw new FiatError("That is not a Solana wallet address.", 400);
-        const wallet = ledger.bindWallet(s.userId, address);
+        const wallet = await bindWallet(players, s.userId, address);
         console.log(`[fiat] bound a wallet for Pollar user ${s.userId.slice(0, 6)}… (client-claimed; Pollar gave none)`);
         reconcileSoon({ ...s, wallet });
         return json(res, 200, { wallet, source: "bound" });
@@ -362,8 +390,8 @@ export function createApp(o: AppOptions = {}): App {
         if (pollar.kind !== "pollar") return json(res, 404, { error: "Nothing to reconcile in demo mode." });
         const who = await whoIs(req, {});
         if (!who.session) throw new FiatError("Sign in with Google first.", 401);
-        const credited = await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, who.session, { log: console.log });
-        return json(res, 200, { credited, ...bal(who.id) });
+        const credited = await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, who.session, { log: console.log, store: storeFor(who.id) });
+        return json(res, 200, { credited, ...(await bal(who.id)) });
       }
       if (p === "/api/v1/fiat/confirm" && req.method === "POST") {
         const b = await readJson(req);
@@ -373,13 +401,13 @@ export function createApp(o: AppOptions = {}): App {
           if (!who.session) throw new FiatError("Sign in with Google to add funds.", 401);
           const signature = String(b.signature ?? b.paymentId ?? "").trim();
           if (!signature) throw new FiatError("signature required", 400);
-          const r = await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, signature, who.session, toMicro(b.amount ?? 0));
-          return json(res, r.status === "pending" ? 202 : 200, { signature, paymentId: signature, ...r, ...bal(who.id) });
+          const r = await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, signature, who.session, toMicro(b.amount ?? 0), storeFor(who.id));
+          return json(res, r.status === "pending" ? 202 : 200, { signature, paymentId: signature, ...r, ...(await bal(who.id)) });
         }
         const paymentId = String(b.paymentId ?? "").trim();
         if (!paymentId) throw new FiatError("paymentId required", 400);
         const r = await confirmPayment(ledger, pollar as MockPollar, paymentId, who.id);
-        return json(res, r.status === "pending" ? 202 : 200, { paymentId, ...r, ...bal(who.id) });
+        return json(res, r.status === "pending" ? 202 : 200, { paymentId, ...r, ...(await bal(who.id)) });
       }
       if (p === "/dev/credit" && req.method === "POST") {
         if (chainKind !== "mock" || pollar.kind !== "mock") return json(res, 403, { error: "Test funds aren't available on this server. Sign in with Google to add funds." });
@@ -389,7 +417,7 @@ export function createApp(o: AppOptions = {}): App {
         const paymentId = String(b.paymentId ?? `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
         (pollar as MockPollar).register(paymentId, user, micro);     // the "payment" the gateway will verify
         const r = await confirmPayment(ledger, pollar as MockPollar, paymentId, user);
-        return json(res, 200, { paymentId, ...r, ...bal(user) });
+        return json(res, 200, { paymentId, ...r, ...(await bal(user)) });
       }
       // ---- rooms and seats (server-enforced; the program knows nothing about seats) ----
       if (p === "/api/v1/rooms" && req.method === "GET") {
@@ -470,15 +498,18 @@ export function createApp(o: AppOptions = {}): App {
           try {
             if (!/^[0-9a-f]{64}$/.test(commitmentHex)) throw new FiatError("commitmentHex must be 32 bytes hex", 400);
             const micro = toMicro(Number(it.stake ?? 0));
-            ledger.debit(user, micro, "plant mine", commitmentHex.slice(0, 16));
+            const ref = `${run.id}:plant:${commitmentHex.slice(0, 16)}`;
+            if (planted.has(ref)) { results.push({ ok: true, trap: planted.get(ref), duplicate: true }); continue; }
+            await storeFor(user).applyDelta(user, -micro, "plant", ref);
             let trap;
             try { trap = await run.chain.plantTrap({ commitmentHex, stake: fromMicro(micro), setter: treasury.setter }); }
-            catch (e) { ledger.credit(user, micro, "plant refund", commitmentHex.slice(0, 16)); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
+            catch (e) { await storeFor(user).applyDelta(user, micro, "refund", `refund:${ref}`); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
+            planted.set(ref, trap);
             ledger.ownTrap(trap.id, { user, runId: run.id, stake: micro });
             results.push({ ok: true, trap });
           } catch (e) { results.push({ ok: false, error: (e as Error).message }); }
         }
-        return json(res, 200, { results, turn: run.match.snapshot().turn, ...bal(user) });
+        return json(res, 200, { results, turn: run.match.snapshot().turn, ...(await bal(user)) });
       }
       // A signed-in backer's position: stake, share of the pool, and the payout if the run ended now (proRata, like the program).
       const mp = /^\/runs\/([^/]+)\/my-position$/.exec(p);
@@ -520,6 +551,8 @@ export function createApp(o: AppOptions = {}): App {
           const treasuryPayout = chain.status === "finalized" ? 0 : Number(proRata(chain.vault, deposit, chain.backerTotal));
           chain.finalize();
           const paid = ledger.settleBackers(run.id, treasuryPayout);
+          for (const [u, share] of Object.entries(paid)) { if (share > 0) await moneyLater(u, share, "payout", `${run.id}:payout:${u}`); else await moneyLater(u, 0, "settle", `${run.id}:settle:${u}`); }
+          for (const t of ledger.trapsIn(run.id)) if (!(t.user in paid)) await moneyLater(t.user, 0, "settle", `${run.id}:settle:${t.user}`);
           return json(res, 200, { runId: run.id, treasuryPayoutMicro: treasuryPayout, paid, duplicate: false });
         }
         const user = await identify(req, b);
@@ -530,31 +563,37 @@ export function createApp(o: AppOptions = {}): App {
           const commitmentHex = String(b.commitmentHex ?? "").toLowerCase();
           if (!/^[0-9a-f]{64}$/.test(commitmentHex)) throw new FiatError("commitmentHex must be 32 bytes hex (sha256 of wordtrap:v1|word|salt|TREASURY pubkey)", 400);
           const micro = toMicro(Number(b.stake ?? 0));
-          ledger.debit(user, micro, "plant mine", commitmentHex.slice(0, 16));
+          const ref = `${run.id}:plant:${commitmentHex.slice(0, 16)}`;
+          if (planted.has(ref)) return json(res, 200, { trap: planted.get(ref), duplicate: true, turn: run.match.snapshot().turn, ...(await bal(user)) });
+          await storeFor(user).applyDelta(user, -micro, "plant", ref);
           let trap;
           try { trap = await chain.plantTrap({ commitmentHex, stake: fromMicro(micro), setter: treasury.setter }); }
-          catch (e) { ledger.credit(user, micro, "plant refund", commitmentHex.slice(0, 16)); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
+          catch (e) { await storeFor(user).applyDelta(user, micro, "refund", `refund:${ref}`); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
+          planted.set(ref, trap);
           ledger.ownTrap(trap.id, { user, runId: run.id, stake: micro });
-          return json(res, 200, { trap, turn: run.match.snapshot().turn, ...bal(user) });   // turn: the undelayed truth for "Live from turn N. Byte is on turn M."
+          return json(res, 200, { trap, turn: run.match.snapshot().turn, ...(await bal(user)) });   // turn: the undelayed truth for "Live from turn N. Byte is on turn M."
         }
         if (fp[2] === "back-fiat") {
           if (!chain.backByte) return json(res, 400, { error: "chain cannot back from the server" });
           const closed = run.match.backingClosedReason();   // server-enforced cut-off (the program itself still accepts back_byte while live)
           if (closed) throw new FiatError(closed, 400);
           const micro = toMicro(Number(b.amount ?? 0));
-          ledger.debit(user, micro, "back byte", run.id);
+          const nth = backCount.get(`${run.id}:${user}`) ?? 0;
+          const ref = `${run.id}:back:${user}:${nth}`;
+          await storeFor(user).applyDelta(user, -micro, "back", ref);
           try { await chain.backByte(treasury.setter, fromMicro(micro)); }
-          catch (e) { ledger.credit(user, micro, "back refund", run.id); throw new FiatError(`back failed: ${(e as Error).message}`, 400); }
+          catch (e) { await storeFor(user).applyDelta(user, micro, "refund", `refund:${ref}`); throw new FiatError(`back failed: ${(e as Error).message}`, 400); }
+          backCount.set(`${run.id}:${user}`, nth + 1);
           ledger.recordBacker(run.id, user, micro);
           run.match.sync();
-          return json(res, 200, { backerTotal: run.match.snapshot().backerTotal, backed: ledger.backersOf(run.id)[user], ...bal(user) });
+          return json(res, 200, { backerTotal: run.match.snapshot().backerTotal, backed: ledger.backersOf(run.id)[user], ...(await bal(user)) });
         }
         // reveal-fiat (I2): the browser kept word+salt; we verify against the commitment and reveal as treasury.
         if (!chain.revealTrap) return json(res, 400, { error: "chain cannot reveal from the server" });
         const trapId = String(b.trapId ?? "");
         const owner = ledger.trapOwner(trapId);
         if (!owner || owner.user !== user) throw new FiatError("not your mine", 403);
-        if (owner.status !== "armed") return json(res, 200, { trapId, status: owner.status, payoutMicro: owner.payout ?? 0, ...bal(user) });
+        if (owner.status !== "armed") return json(res, 200, { trapId, status: owner.status, payoutMicro: owner.payout ?? 0, ...(await bal(user)) });
         const word = normalizeWord(String(b.word ?? ""));
         const saltHex = String(b.saltHex ?? "").toLowerCase();
         if (!isMineable(word) || !/^[0-9a-f]{64}$/.test(saltHex)) throw new FiatError("word (mineable) and saltHex (32 bytes) required", 400);
@@ -566,7 +605,7 @@ export function createApp(o: AppOptions = {}): App {
         try { fired = await chain.revealTrap({ trapId, word, saltHex, setter: treasury.setter }); }
         catch (e) { throw new FiatError(`reveal rejected: ${(e as Error).message}`, 400); }
         const after = ledger.trapOwner(trapId)!;      // credited by the onTrapFired hook, synchronously
-        return json(res, 200, { trapId, status: after.status, payoutMicro: after.payout ?? 0, fired, ...bal(user) });
+        return json(res, 200, { trapId, status: after.status, payoutMicro: after.payout ?? 0, fired, ...(await bal(user)) });
       }
 
       // ---- spectators: watch page + mobile ----
@@ -583,7 +622,7 @@ export function createApp(o: AppOptions = {}): App {
           if (req.headers["x-user"] || req.headers.authorization) { try { viewer = await identify(req, {}); run.room.touch(viewer, run.match.snapshot().turn); } catch { viewer = null; } }
           // display names for every player on the board (setters, fiat backers, seats); the page shows short addresses for the rest
           const ids = new Set<string>([...feed.state.traps.map((t) => t.setter), ...Object.keys(ledger.backersOf(run.id)), ...run.room.humans().map((s) => s.address)]);
-          const players = await profiles.names(ids);
+          const players = { ...(await profiles.names(ids)), ...(supa ? await supa.names([...ids].filter((a) => !isGuest(a))).catch(() => ({})) : {}) };
           for (const [a, n] of Object.entries(players)) nameCache.set(a, n);
           // The room (seats, host, private) is read live, never from the delayed board history: it comes as a
           // top-level `room` object, and is also merged into `state` for older readers. Event snapshots do not
@@ -622,10 +661,25 @@ export function createApp(o: AppOptions = {}): App {
     }
   });
 
+  /** On start: copy the old ledger file into Supabase once (idempotent), then refund stakes of runs that never settled. */
+  async function startup() {
+    let migrated: { deposits: number; balances: number } | null = null;
+    if (supa && (Object.keys(ledger.balances()).length || Object.keys(ledger.payments()).length)) {
+      try { migrated = await migrateLedger(ledger, supa); if (migrated.deposits || migrated.balances) console.log(`[fiat] migrated ${migrated.deposits} deposits and ${migrated.balances} balances from the ledger file into Supabase`); }
+      catch (e) { console.warn("[fiat] migration skipped:", (e as Error).message); }
+    }
+    const refunds: { user: string; micro: number; ref: string }[] = [];
+    const live = new Set(runs.all().filter((r) => !r.match.finished()).map((r) => r.id));
+    for (const st of supa ? [supa, memStore] : [memStore]) {
+      try { for (const r of await refundOrphans(st, live)) { refunds.push(r); console.log(`[fiat] refunded $${microToUsd(r.micro)} to ${shortAddress(r.user)} for an unfinished run (${r.ref})`); } }
+      catch (e) { console.warn(`[fiat] ${st.kind} refunds skipped:`, (e as Error).message); }
+    }
+    return { refunds, migrated };
+  }
   return {
-    server, runs, ledger, pollar,
+    server, runs, ledger, pollar, store: supa, players, startup,
     port: () => port,
-    listen: (want: number) => new Promise<number>((r) => server.listen(want, () => { port = (server.address() as any).port; r(port); })),
+    listen: (want: number) => new Promise<number>((r) => server.listen(want, async () => { port = (server.address() as any).port; await startup(); r(port); })),
     close: () => { clearInterval(retry); houseStop.abort(); return new Promise<void>((r) => server.close(() => r())); },
   };
 }

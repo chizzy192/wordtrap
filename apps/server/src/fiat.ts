@@ -30,18 +30,23 @@ export class FiatError extends Error {
 export type PaymentStatus = "credited" | "pending" | "failed";
 export interface LedgerEntry { ts: number; user: string; delta: number; reason: string; ref?: string }
 export interface TrapOwnership { user: string; runId: string; stake: number; status: "armed" | "paid" | "refunded"; payout?: number }
+export interface MoneyJob { user: string; delta: number; kind: string; ref: string }
 export interface LedgerFile {
   version: 1;
   balances: Record<string, number>;                                  // user -> micro-USD
   payments: Record<string, { user: string; micro: number; status: PaymentStatus; ts: number; tries: number }>;
   /** Last resort when Pollar gives no Solana wallet: Pollar userId → the address the page claimed, bound once. */
   wallets: Record<string, string>;
+  /** Movements already applied, keyed user|kind|ref → balance after (a retry with the same ref is a no-op). */
+  applied: Record<string, number>;
+  /** Game money (bounties, payouts) that could not reach the durable store yet. */
+  queue: MoneyJob[];
   traps: Record<string, TrapOwnership>;                              // on-chain trapId -> owner
   backers: Record<string, Record<string, number>>;                   // runId -> user -> micro-USD backed
   settled: Record<string, { ts: number; paid: Record<string, number> }>;
   history: LedgerEntry[];
 }
-const EMPTY = (): LedgerFile => ({ version: 1, balances: {}, payments: {}, wallets: {}, traps: {}, backers: {}, settled: {}, history: [] });
+const EMPTY = (): LedgerFile => ({ version: 1, balances: {}, payments: {}, wallets: {}, applied: {}, queue: [], traps: {}, backers: {}, settled: {}, history: [] });
 const HISTORY_CAP = 500;
 
 export class FiatLedger {
@@ -69,6 +74,17 @@ export class FiatLedger {
   }
 
   balance(user: string): number { return this.d.balances[user] ?? 0; }
+  balances(): Readonly<Record<string, number>> { return this.d.balances; }
+  payments(): Readonly<LedgerFile["payments"]> { return this.d.payments; }
+  creditedSignatures(user: string): string[] { return Object.entries(this.d.payments).filter(([, p]) => p.status === "credited" && p.user === user).map(([s]) => s); }
+  /** One movement, once per (user, kind, ref): a retry returns the balance it left. Debits that exceed the balance throw 402. */
+  apply(user: string, delta: number, kind: string, ref: string): number {
+    const key = `${user}|${kind}|${ref}`;
+    if (key in this.d.applied) return this.d.applied[key];
+    if (delta < 0) this.debit(user, -delta, kind, ref); else if (delta > 0) this.credit(user, delta, kind, ref); else this.log({ ts: Date.now(), user, delta: 0, reason: kind, ref });
+    this.d.applied[key] = this.balance(user); this.save();
+    return this.d.applied[key];
+  }
 
   credit(user: string, micro: number, reason: string, ref?: string) {
     if (!Number.isInteger(micro) || micro < 0) throw new FiatError(`bad credit ${micro}`, 500);
@@ -106,6 +122,11 @@ export class FiatLedger {
     p.status = "failed"; this.save();
   }
   payment(paymentId: string) { return this.d.payments[paymentId]; }
+  /** Record a signature as credited without moving memory money (the MoneyStore did). */
+  markCredited(paymentId: string, user: string, micro: number) { const p = this.d.payments[paymentId]; if (p?.status === "credited") return; this.d.payments[paymentId] = { user, micro, status: "credited", ts: Date.now(), tries: (p?.tries ?? 0) + 1 }; this.save(); }
+  enqueue(job: MoneyJob) { if (!this.d.queue.some((j) => j.ref === job.ref && j.kind === job.kind)) { this.d.queue.push(job); this.save(); } }
+  queued(): MoneyJob[] { return [...this.d.queue]; }
+  dequeue(ref: string) { this.d.queue = this.d.queue.filter((j) => j.ref !== ref); this.save(); }
   /** A refused signature that may belong to another sender is not failed for everyone. */
   unmarkFailed(paymentId: string) { const p = this.d.payments[paymentId]; if (p && p.status === "failed") { delete this.d.payments[paymentId]; this.save(); } }
   /** Bind a Pollar user to one Solana address, once: one address per user, one user per address, never changed here. */
@@ -127,13 +148,13 @@ export class FiatLedger {
   trapsOf(user: string, runId?: string): (TrapOwnership & { trapId: string })[] {
     return Object.entries(this.d.traps).filter(([, t]) => t.user === user && (!runId || t.runId === runId)).map(([trapId, t]) => ({ trapId, ...t }));
   }
-  /** Pay the owner of a fired fiat mine. Idempotent per trap. */
-  payTrap(trapId: string, payoutMicro: number): boolean {
+  trapsIn(runId: string): (TrapOwnership & { trapId: string })[] { return Object.entries(this.d.traps).filter(([, t]) => t.runId === runId).map(([trapId, t]) => ({ trapId, ...t })); }
+  /** Mark a fired fiat mine paid and return its owner; the money moves through the owner's MoneyStore. Idempotent per trap. */
+  payTrap(trapId: string, payoutMicro: number): TrapOwnership | null {
     const t = this.d.traps[trapId];
-    if (!t || t.status !== "armed") return false;
-    t.status = "paid"; t.payout = payoutMicro;
-    this.credit(t.user, payoutMicro, "mine fired", trapId);   // saves
-    return true;
+    if (!t || t.status !== "armed") return null;
+    t.status = "paid"; t.payout = payoutMicro; this.save();
+    return t;
   }
 
   recordBacker(runId: string, user: string, micro: number) {
@@ -142,24 +163,21 @@ export class FiatLedger {
     this.save();
   }
   backersOf(runId: string): Record<string, number> { return this.d.backers[runId] ?? {}; }
-  /** Split the treasury's on-chain backer payout among the fiat backers of a run, pro-rata, once. */
+  /** Split the treasury's on-chain backer payout among the fiat backers of a run, pro-rata, once. Returns each
+   *  backer's share; the money moves through each backer's MoneyStore (kind payout, ref runId:payout:user). */
   settleBackers(runId: string, treasuryPayoutMicro: number): Record<string, number> {
     if (this.d.settled[runId]) return this.d.settled[runId].paid;
     const backers = this.backersOf(runId);
     const total = Object.values(backers).reduce((n, x) => n + x, 0);
     const paid: Record<string, number> = {};
-    for (const [user, micro] of Object.entries(backers)) {
-      const share = Number(proRata(BigInt(treasuryPayoutMicro), BigInt(micro), BigInt(total)));
-      paid[user] = share;
-      if (share > 0) this.credit(user, share, "backer settlement", runId);
-    }
+    for (const [user, micro] of Object.entries(backers)) paid[user] = Number(proRata(BigInt(treasuryPayoutMicro), BigInt(micro), BigInt(total)));
     this.d.settled[runId] = { ts: Date.now(), paid };
     this.save();
     return paid;
   }
   settled(runId: string) { return this.d.settled[runId]; }
 
-  history(user: string, n = 50): LedgerEntry[] { return this.d.history.filter((h) => h.user === user).slice(-n); }
+  history(user: string | undefined, n = 50): LedgerEntry[] { return this.d.history.filter((h) => user === undefined || h.user === user).slice(-n); }
 
   private log(e: LedgerEntry) {
     this.d.history.push(e);
@@ -388,11 +406,11 @@ export interface UsdcConfig {
  * Refuses (and marks failed) when the sender is not the player's wallet, the treasury did not receive the mint, or
  * the amount differs. Not yet finalized → pending (retried), never credited.
  */
-export async function confirmUsdcPayment(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, signature: string, session: PollarSession, amountMicro: number | null) {
+export async function confirmUsdcPayment(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, signature: string, session: PollarSession, amountMicro: number | null, store: DepositStore = ledgerStore(ledger)) {
   const user = session.wallet;
   if (!user) throw new FiatError("Your Pollar account has no Solana wallet yet.", 403);
-  const existing = ledger.payment(signature);
-  if (existing?.status === "credited") return { status: "credited" as const, credited: false, duplicate: true, micro: existing.micro };
+  const existing = await store.depositOf(signature);
+  if (existing) return { status: "credited" as const, credited: false, duplicate: true, micro: existing.micro };
   if (!/^[1-9A-HJ-NP-Za-km-z]{64,100}$/.test(signature)) throw new FiatError("That is not a Solana transaction signature.", 400);
   if (amountMicro !== null && (!Number.isInteger(amountMicro) || amountMicro <= 0)) throw new FiatError("Say how much USDC the payment was.", 400);
   // the player's Pollar app and this server must be on the same Solana network
@@ -409,8 +427,18 @@ export async function confirmUsdcPayment(ledger: FiatLedger, rpc: SolanaRpc, cfg
   if (sent <= 0n) { ledger.markFailed(signature); throw new FiatError("That payment was not sent from your Pollar wallet.", 403); }
   if (amountMicro !== null && received !== BigInt(amountMicro)) { ledger.markFailed(signature); throw new FiatError(`The treasury received $${microToUsd(received)}, not $${microToUsd(BigInt(amountMicro))}.`, 402); }
   const micro = Number(received);
-  const r = ledger.creditFromPayment(signature, user, micro);
-  return { status: "credited" as const, ...r, micro };
+  const credited = await store.creditDeposit(signature, user, user, micro);   // durable, exactly once
+  ledger.markCredited(signature, user, micro);                                 // bookkeeping: the pending/retry record says credited
+  return { status: "credited" as const, credited, duplicate: !credited, micro };
+}
+/** Where deposits are credited: the memory ledger, or a durable MoneyStore. */
+export interface DepositStore { depositOf(signature: string): Promise<{ user: string; micro: number } | null>; creditDeposit(signature: string, user: string, wallet: string, micro: number): Promise<boolean> }
+/** The memory ledger as a DepositStore (demo mode and tests): money and bookkeeping are the same record. */
+export function ledgerStore(ledger: FiatLedger): DepositStore {
+  return {
+    async depositOf(sig) { const p = ledger.payment(sig); return p?.status === "credited" ? { user: p.user, micro: p.micro } : null; },
+    async creditDeposit(sig, user, _w, micro) { return ledger.creditFromPayment(sig, user, micro).credited; },
+  };
 }
 /** Integer micro-USD → "5.00", with no float on the way. */
 export function microToUsd(m: bigint | number): string { const n = BigInt(m); const neg = n < 0n; const a = neg ? -n : n; const w = a / 1_000_000n, f = a % 1_000_000n; return `${neg ? "-" : ""}${w}.${(f / 10_000n).toString().padStart(2, "0")}`; }
@@ -437,19 +465,20 @@ function tokenDeltas(tx: any, mint: string): { owner: string; delta: bigint }[] 
  */
 /** What reconciliation learned about a signature, so the next pass does not fetch it again: its USDC sender, or that it is no deposit. */
 const seenDeposits = new Map<string, string | null>();
-export async function reconcileDeposits(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, session: PollarSession, o: { limit?: number; log?: (line: string) => void } = {}) {
+export async function reconcileDeposits(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, session: PollarSession, o: { limit?: number; log?: (line: string) => void; store?: DepositStore } = {}) {
   const credited: { signature: string; micro: number }[] = [];
   if (!session.wallet) return credited;
+  const store = o.store ?? ledgerStore(ledger);
   const accounts = await rpc.getTokenAccountsByOwner(cfg.treasury, cfg.mint);
   for (const account of accounts) {
     for (const { signature, err } of await rpc.getSignaturesForAddress(account, o.limit ?? 100)) {
       if (err) continue;
-      if (ledger.payment(signature)?.status === "credited") continue;             // once per signature
+      if (await store.depositOf(signature)) continue;                              // once per signature
       if (seenDeposits.has(signature) && seenDeposits.get(signature) !== session.wallet) continue;   // someone else's, or no deposit
       // an earlier refusal (a wrong amount claimed by the page, say) does not stop a real deposit from being credited
       ledger.unmarkFailed(signature);
       try {
-        const r = await confirmUsdcPayment(ledger, rpc, cfg, signature, session, null);
+        const r = await confirmUsdcPayment(ledger, rpc, cfg, signature, session, null, store);
         if (r.status === "credited" && r.credited) { seenDeposits.set(signature, session.wallet); credited.push({ signature, micro: r.micro }); o.log?.(`[fiat] reconciled ${signature} +$${microToUsd(r.micro)} for wallet ${session.wallet.slice(0, 4)}…`); }
       } catch (e) {
         if (!(e instanceof FiatError)) throw e;
