@@ -53,7 +53,7 @@
   --fusenum: clamp(44px, min(6.5vw, 9vh), 120px);
   --money: clamp(24px, min(2.4vw, 4vh), 44px);
   --track: clamp(12px, min(1.4vw, 2vh), 26px);
-  --cardmin: clamp(120px, min(12vw, 20vh), 220px);
+  --cardmin: clamp(96px, 9vw, 200px);   /* five across on a laptop's left column, more on wider screens; always wraps */
   --log4: calc(4 * 1.45em + 3 * 6px);   /* four play-by-play lines */
 }
 @media (min-width: 1280px) { :root { --lw: 4px; --sh: 7px; } }
@@ -231,19 +231,19 @@ header { display: flex; align-items: center; gap: calc(var(--gap) * .6); padding
 .stats { display: flex; gap: clamp(14px, 1.4vw, 28px); flex-wrap: wrap; margin-top: calc(var(--gap) * .5); color: var(--soft); }
 .stats b { color: var(--text); font-weight: 600; }
 #mines { display: flex; flex-direction: column; gap: calc(var(--gap) * .45); }
-.mine { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 3.6em; border: var(--lw) solid var(--ink); padding: .5em .65em; }
-.mine.armed { background: repeating-linear-gradient(-45deg, var(--yellow) 0 18px, var(--ink) 18px 36px); }
-.mine.armed .tag { background: #FFFFFF; color: #14121A; border: var(--lw) solid #14121A; padding: 4px 10px; font-weight: 600; }
-.mine.armed .stake { text-align: right; line-height: 1.05; background: #FFFFFF; color: #14121A; border: var(--lw) solid #14121A; padding: 4px 10px; transform: rotate(-1.5deg); }
-.mine.armed .stake b { display: block; font: 800 1.5em/1 var(--cond); }
-.mine.armed .stake small { font-size: .75em; font-weight: 600; }
-.mine.fired { background: #FFFFFF; color: #14121A; box-shadow: var(--sh) var(--sh) 0 var(--red); }
-.mine.fired .word { font: 800 1.5em/1 var(--cond); color: #D4183A; }
-.mine.fired .stake { text-align: right; line-height: 1.05; }
-.mine.fired .stake b { display: block; font: 800 1.5em/1 var(--cond); }
-.mine.fired .stake small { font-size: .75em; color: #4A4658; font-weight: 500; }
-.mine.summary { background: #FFFFFF; color: #14121A; box-shadow: var(--sh) var(--sh) 0 var(--red); font-weight: 600; }
-.mine .yours { position: absolute; top: -12px; left: 12px; background: var(--blue); color: #fff; font-size: 11px; font-weight: 600; padding: 1px 7px; border: 2px solid var(--ink); }
+#mines .mine { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 3.6em; border: var(--lw) solid var(--ink); padding: .5em .65em; }
+#mines .mine.armed { background: repeating-linear-gradient(-45deg, var(--yellow) 0 18px, var(--ink) 18px 36px); }
+#mines .mine.armed .tag { background: #FFFFFF; color: #14121A; border: var(--lw) solid #14121A; padding: 4px 10px; font-weight: 600; }
+#mines .mine.armed .stake { text-align: right; line-height: 1.05; background: #FFFFFF; color: #14121A; border: var(--lw) solid #14121A; padding: 4px 10px; transform: rotate(-1.5deg); }
+#mines .mine.armed .stake b { display: block; font: 800 1.5em/1 var(--cond); }
+#mines .mine.armed .stake small { font-size: .75em; font-weight: 600; }
+#mines .mine.fired { background: #FFFFFF; color: #14121A; box-shadow: var(--sh) var(--sh) 0 var(--red); }
+#mines .mine.fired .word { font: 800 1.5em/1 var(--cond); color: #D4183A; }
+#mines .mine.fired .stake { text-align: right; line-height: 1.05; }
+#mines .mine.fired .stake b { display: block; font: 800 1.5em/1 var(--cond); }
+#mines .mine.fired .stake small { font-size: .75em; color: #4A4658; font-weight: 500; }
+#mines .mine.summary { background: #FFFFFF; color: #14121A; box-shadow: var(--sh) var(--sh) 0 var(--red); font-weight: 600; }
+#mines .mine .yours { position: absolute; top: -12px; left: 12px; background: var(--blue); color: #fff; font-size: 11px; font-weight: 600; padding: 1px 7px; border: 2px solid var(--ink); }
 .caption { color: var(--soft); margin: calc(var(--gap) * .6) 0 calc(var(--gap) * .5); font-size: .9em; }
 .sidelinks { margin: 12px 0 2px; }
 .sidebtn { text-decoration: none; display: inline-block; font-size: .9em; padding: .55em .9em; }
@@ -367,7 +367,7 @@ body.shake .wrap { animation: shake .3s steps(6); }
 @keyframes pop { 0% { transform: scale(0); } 70% { transform: scale(1.15); } 100% { transform: scale(1); } }
 .card.hotflash { animation: hotflash .16s steps(2, jump-none); }
 @keyframes hotflash { from { background-color: #FF2E4C; } to { background-color: #FFFFFF; } }
-.mine.slam { animation: slamin .18s var(--snap); }
+#mines .mine.slam { animation: slamin .18s var(--snap); }
 @keyframes slamin { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
 .money.bump { animation: bump .18s steps(2, jump-none); }
 @keyframes bump { 50% { transform: translateY(3px); } }
@@ -390,23 +390,42 @@ body.shake .wrap { animation: shake .3s steps(6); }
   #ticker div { animation: none; }
 }
 
-/* ---------- short windows first (under 760px tall): one scrolling row of cards, "Up next" folded,
-   the last action merged into the top of the play by play. Taller windows restore the full layout. ---------- */
-#hand { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line) var(--board); }
-#hand .card { flex: 0 0 var(--cardmin); }
-#upNext .cap, #nextHand { display: none; }
-#upNext h2 { display: inline; margin-right: 10px; }
-#upNextToggle { display: inline-block; }
-#upNext.open .cap { display: block; } #upNext.open #nextHand { display: grid; }
+/* ---------- short windows first (under 760px tall): the last action merges into the top of the play by play.
+   The hand is never scrolled, clipped or collapsed at any size: it always wraps, and when height is short the
+   cards shrink first (tight0, set by the fit routine) before gaps and the progress strip. ---------- */
 #action { display: none; }
-@media (min-height: 760px) {
-  #hand { display: grid; overflow: visible; }
-  #hand .card { flex: none; }
-  #upNext .cap { display: block; } #nextHand { display: grid; }
-  #upNext h2 { display: block; margin-right: 0; }
-  #upNextToggle { display: none; }
-  #action { display: block; }
-}
+@media (min-height: 760px) { #action { display: block; } }
+#upNext { display: none !important; }                       /* the next tile lives in the right panel now */
+.tight0 .card { padding: 6px 9px; min-height: 0; }
+.tight0 .card .w { font-size: clamp(16px, 1.5vw, 30px); }
+.tight0 .card .risk { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; min-height: 0; }
+.tight0 .card .bar { height: 4px; margin-top: 3px; }
+.tight0 #hand { gap: 8px; }
+.tight0 #bubble .w { padding: .3em .55em; font-size: clamp(16px, 1.5vw, 24px); }
+.tight0 #bubble { min-height: 0; padding: 2px 0 4px; }
+.tight1 .strip { padding: 8px 14px; margin: 4px 0 6px; }
+.tight1 #prompt { font-size: clamp(24px, min(3.4vw, 5vh), 56px); }
+.tight1 h2 { margin: 6px 0 3px; }
+.tight1 .tileno, .tight1 #need, .tight1 .deciding { font-size: .85em; }
+.tight1 .foot h2 { margin-top: 2px; }
+/* 4. last resort (very short windows such as 1024x600): compact the header, the fuse and the small labels.
+   Never the hand, the prompt, the played strip or the four play-by-play lines. */
+body.tight4 header { padding: 6px 0 2px; }
+body.tight4 .fuse { margin: 2px 0 6px; --track: clamp(10px, 1.6vh, 20px); }
+body.tight4 #fuseSec { font-size: clamp(36px, 7vh, 120px); }
+body.tight4 .fuselabel { margin-top: 0; font-size: .8em; }
+.tight4 h2 { margin: 3px 0 2px; font-size: 1em; }
+.tight4 .tileno, .tight4 #need, .tight4 .deciding { font-size: .8em; }
+.tight4 #need, .tight4 .deciding { margin-top: 2px; }
+.tight4 .strip { margin: 2px 0 4px; padding: 6px 12px; }
+.tight4 #hand { padding: 2px 4px 4px 0; }
+.tight4 #shieldLine { margin: 4px 0 0; }
+
+/* read-only "Up next" for viewers without a seat, at the top of the right panel */
+#upNextRight[hidden] { display: none; }
+#upNextRight .pprompt { font: 600 1.05em/1.2 var(--cond); color: var(--soft); margin: 2px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#upNextRight .pcards .pcard { cursor: default; }
+#upNextRight .help { color: var(--soft); font-size: .82em; margin-top: 6px; }
 
 /* ---------- breakpoints (min-width only) ---------- */
 @media (min-width: 640px) {
@@ -430,7 +449,7 @@ body.shake .wrap { animation: shake .3s steps(6); }
   .fuse { margin: calc(var(--gap) * .4) 0 calc(var(--gap) * .5); }
   #end { flex: 0 0 auto; }
   .grid { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(0, 1fr); grid-template-areas: "left right"; align-items: stretch; }
-  /* The board is one column of rows: tile line, prompt, hand, up next, played strip, last action,
+  /* The board is one column of rows: tile line, prompt, hand (every card, wrapping), played strip, last action,
      progress strip, play by play. The wrappers vanish (display: contents) so every row is a direct
      child, and the play-by-play row is minmax(4 lines, 1fr): it always shows four lines and takes
      any spare height. Only if that still does not fit does the column scroll inside itself. */
@@ -517,6 +536,13 @@ body.shake .wrap { animation: shake .3s steps(6); }
         <div class="seatrow" id="seatActions"></div>
         <div class="private" id="privateRow" hidden><button type="button" id="privateBtn" aria-pressed="false" aria-label="Private room"></button><span><b>Private room</b><br><span class="help">Only people with the link can join.</span></span></div>
         <div id="seatMsg" aria-live="polite"></div>
+      </div>
+      <!-- the next tile, read-only, for viewers without a seat (seated players see it in the planter's picker) -->
+      <div class="pick" id="upNextRight" hidden>
+        <div class="plabel"><span>Up next</span></div>
+        <div class="pprompt" id="upNextRightPrompt"></div>
+        <div class="pcards" id="upNextRightCards"></div>
+        <div class="help">Take a seat to mine these before Byte gets there.</div>
       </div>
       <!-- planter sits right under the seats so a seated player reaches it without scrolling -->
       <button id="plantToggle" type="button" aria-expanded="false" aria-controls="plantPanel">Plant a mine on a word</button>
@@ -669,12 +695,15 @@ function render() {
   $("promptStrip").classList.toggle("shielded", !!s.shielded);
   $("shieldLine").hidden = !s.shielded;
   const next = s.nextHand ?? s.next;                 // the server sends nextHand; the ?demo fixture used `next`
-  if (next && s.status === "live") {
-    $("upNext").hidden = false;
-    $("nextPrompt").textContent = next.prompt;
-    const tap = !!s.seats?.some((x) => x.you);
-    $("nextHand").innerHTML = next.hand.map((w) => miniCard(w, next.safe ?? s.nextSafeCard, tap)).join("");
-  } else $("upNext").hidden = true;
+  $("upNext").hidden = true;                          // the left column no longer carries the next tile
+  // viewers without a seat see the next tile read-only under the seats; seated players have it in the picker
+  const seated = !!s.seats?.some((x) => x.you);
+  if (next && s.status === "live" && !seated) {
+    $("upNextRight").hidden = false;
+    $("upNextRightPrompt").textContent = next.prompt;
+    const safeNext = next.safe ?? s.nextSafeCard;
+    $("upNextRightCards").innerHTML = next.hand.map((w) => `<span class="pcard${w === safeNext ? " safe" : ""}" aria-disabled="true"><span class="w">${esc(w)}</span></span>`).join("");
+  } else $("upNextRight").hidden = true;
   const who = s.callsign || "Byte";
   $("meta").textContent = s.status === "live" ? `${who} is playing, turn ${s.turn}` : `${who} finished on turn ${s.turn}`;
   $("stakeLink").href = `/stake/?run=${encodeURIComponent(s.matchId)}`;
@@ -1015,19 +1044,23 @@ $("nextHand").addEventListener("click", (e) => {
 $("nextHand").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("tap")) { e.preventDefault(); e.target.click(); } });
 $("mines").addEventListener("click", (e) => { if (e.target.closest("#firedMore")) { firedOpen = true; render(); } });
 
-// ---- fit: when the pinned left column is short on height, shrink gaps, then collapse "Up next", then hide the progress strip.
-//      Never the log, the prompt, the hand or the played strip. ----
+// ---- fit: when the pinned left column is short on height, shrink the cards first, then the gaps, then drop the
+//      progress strip, and as a last resort compact the header and fuse. Never clip, scroll or collapse the hand;
+//      never the log (four lines), the prompt or the played strip. ----
 let fitRaf = 0;
+const TIGHT = ["tight0", "tight1", "tight2", "tight3", "tight4"];
 function fitLeft() {
   cancelAnimationFrame(fitRaf);
   fitRaf = requestAnimationFrame(() => {
     const col = document.querySelector(".leftcol");
-    if (!col || getComputedStyle(col).display === "contents") { col?.classList.remove("tight1", "tight2", "tight3"); return; }
-    col.classList.remove("tight1", "tight2", "tight3");
+    document.body.classList.remove("tight4");
+    if (!col || getComputedStyle(col).display === "contents") { col?.classList.remove(...TIGHT); return; }
+    col.classList.remove(...TIGHT);
     const over = () => col.scrollHeight > col.clientHeight + 2;
-    if (over()) col.classList.add("tight1");
-    if (over()) col.classList.add("tight2");
-    if (over()) col.classList.add("tight3");
+    if (over()) col.classList.add("tight0");   // 1. shrink the cards (padding, word size, one-line risk)
+    if (over()) col.classList.add("tight1");   // 2. tighter gaps
+    if (over()) col.classList.add("tight3");   // 3. drop the progress strip and the last-action line
+    if (over()) { col.classList.add("tight4"); document.body.classList.add("tight4"); }   // 4. compact header, fuse, labels
   });
 }
 addEventListener("resize", fitLeft);

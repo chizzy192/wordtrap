@@ -1,0 +1,326 @@
+[
+  {
+    "theme": "light",
+    "w": 1366,
+    "h": 650,
+    "inner": [
+      1366,
+      650
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 5,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0 tight1",
+    "logLines": 8,
+    "logVisible": 4,
+    "logTextLines": 6,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "20.49px",
+    "fusePx": "58.5px"
+  },
+  {
+    "theme": "light",
+    "w": 1280,
+    "h": 720,
+    "inner": [
+      1280,
+      720
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 5,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0",
+    "logLines": 8,
+    "logVisible": 4,
+    "logTextLines": 5.9,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "19.2px",
+    "fusePx": "64.8px"
+  },
+  {
+    "theme": "light",
+    "w": 1024,
+    "h": 600,
+    "inner": [
+      1024,
+      600
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 5,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0 tight1",
+    "logLines": 8,
+    "logVisible": 4,
+    "logTextLines": 4.8,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "16px",
+    "fusePx": "54px"
+  },
+  {
+    "theme": "light",
+    "w": 1920,
+    "h": 1080,
+    "inner": [
+      1920,
+      1080
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 6,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0",
+    "logLines": 8,
+    "logVisible": 8,
+    "logTextLines": 9.5,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "28.8px",
+    "fusePx": "97.2px"
+  },
+  {
+    "theme": "light",
+    "w": 375,
+    "h": 812,
+    "inner": [
+      375,
+      812
+    ],
+    "pinned": false,
+    "pageScrolls": true,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 4,
+    "cols": 3,
+    "leftOverflow": 0,
+    "leftBottomGap": null,
+    "tight": "",
+    "logLines": 8,
+    "logVisible": 0,
+    "logTextLines": 0.7,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "20px",
+    "fusePx": "44px",
+    "order": [
+      [
+        "promptStrip",
+        239
+      ],
+      [
+        "hand",
+        356
+      ],
+      [
+        "bubble",
+        666
+      ],
+      [
+        "ticker",
+        796
+      ],
+      [
+        "money",
+        954
+      ]
+    ]
+  },
+  {
+    "theme": "dark",
+    "w": 1366,
+    "h": 650,
+    "inner": [
+      1366,
+      650
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 5,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0 tight1",
+    "logLines": 8,
+    "logVisible": 4,
+    "logTextLines": 6,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "20.49px",
+    "fusePx": "58.5px"
+  },
+  {
+    "theme": "dark",
+    "w": 1280,
+    "h": 720,
+    "inner": [
+      1280,
+      720
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 5,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0",
+    "logLines": 8,
+    "logVisible": 4,
+    "logTextLines": 5.9,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "19.2px",
+    "fusePx": "64.8px"
+  },
+  {
+    "theme": "dark",
+    "w": 1024,
+    "h": 600,
+    "inner": [
+      1024,
+      600
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 5,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0 tight1",
+    "logLines": 8,
+    "logVisible": 4,
+    "logTextLines": 4.8,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "16px",
+    "fusePx": "54px"
+  },
+  {
+    "theme": "dark",
+    "w": 1920,
+    "h": 1080,
+    "inner": [
+      1920,
+      1080
+    ],
+    "pinned": true,
+    "pageScrolls": false,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 2,
+    "cols": 6,
+    "leftOverflow": 0,
+    "leftBottomGap": 0,
+    "tight": "tight0",
+    "logLines": 8,
+    "logVisible": 8,
+    "logTextLines": 9.5,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "28.8px",
+    "fusePx": "97.2px"
+  },
+  {
+    "theme": "dark",
+    "w": 375,
+    "h": 812,
+    "inner": [
+      375,
+      812
+    ],
+    "pinned": false,
+    "pageScrolls": true,
+    "hScroll": false,
+    "handCards": 10,
+    "cardsInside": 10,
+    "handScrolls": false,
+    "handRows": 4,
+    "cols": 3,
+    "leftOverflow": 0,
+    "leftBottomGap": null,
+    "tight": "",
+    "logLines": 8,
+    "logVisible": 0,
+    "logTextLines": 0.7,
+    "upNextLeft": "none",
+    "upNextRight": true,
+    "upNextRightCards": 10,
+    "cardPx": "20px",
+    "fusePx": "44px",
+    "order": [
+      [
+        "promptStrip",
+        239
+      ],
+      [
+        "hand",
+        356
+      ],
+      [
+        "bubble",
+        666
+      ],
+      [
+        "ticker",
+        796
+      ],
+      [
+        "money",
+        954
+      ]
+    ]
+  }
+]

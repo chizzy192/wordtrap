@@ -56,7 +56,7 @@
       "win": { "path": "status", "equals": ["escaped"] },
       "score": { "path": "score", "label": "FUSE SCORE" }
     },
-    "watchUrl": "https://wordtrap.onrender.com/watch/{{runId}}?theme=dark&delay=4"
+    "watchUrl": "https://wordtrap.onrender.com/watch/{{runId}}?theme=dark"
   }
 }
 ```

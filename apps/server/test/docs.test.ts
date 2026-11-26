@@ -24,7 +24,8 @@ test("17: the bytearena document starts with the JSON block, then prose under 2,
 
 test("18: watchUrl points at the dark, delayed watch page", () => {
   const spec = JSON.parse(readFileSync(root("byte.game.json"), "utf8"));
-  assert.equal(spec.api.watchUrl, "https://wordtrap.onrender.com/watch/{{runId}}?theme=dark&delay=4");
+  // the server's default delay is already 4 s (SPECTATE_DELAY_SECONDS), so the query may carry it or leave it implicit
+  assert.match(spec.api.watchUrl, /^https:\/\/wordtrap\.onrender\.com\/watch\/\{\{runId\}\}\?theme=dark(&delay=4)?$/);
   assert.equal(spec.api.baseUrl, "https://wordtrap.onrender.com");
 });
 
