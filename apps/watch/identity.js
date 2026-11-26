@@ -11,6 +11,18 @@ export const short = (id) => (!id ? "" : id.length <= 10 ? id : `${id.slice(0, 4
 export const NAME_RULE = "Names are 2 to 16 characters: letters, numbers, spaces and underscores.";
 export const validName = (raw) => { const n = String(raw ?? "").trim().replace(/\s+/g, " "); return n.length >= 2 && n.length <= 16 && /^[A-Za-z0-9_][A-Za-z0-9 _]{0,15}$/.test(n) ? n : null; };
 
+/** What a player may read. Known raw server strings become sentences, sentences written for players pass through,
+ *  anything else (protocol hints, stack-like text, codes) becomes the fallback. Never show a server body directly. */
+export function friendly(raw, fallback = "That didn't work. Try again.") {
+  const s = String(raw ?? "").trim();
+  if (!s) return fallback;
+  if (/bearer|authorization|demo-credit|send \{user\}|sign in with (pollar|google)/i.test(s)) return "Sign in to play.";
+  if (/insufficient balance/i.test(s)) return "Not enough funds. Add funds to play.";
+  if (/dev credits only/i.test(s)) return "Test funds aren't available on this server. Sign in with Google to add funds.";
+  if (/^[A-Z][^{}<>`]*[.!?]$/.test(s) && !/:\s*\S*(error|undefined|null)/i.test(s)) return s;
+  return fallback;
+}
+
 function randomId() {
   const a = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
   const b = crypto.getRandomValues(new Uint8Array(8));
@@ -46,7 +58,7 @@ export const identity = {
   async saveName(name) {
     const r = await fetch("/api/v1/profile", { method: "PUT", headers: this.headers(), body: JSON.stringify({ name }) });
     const p = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(p.error || NAME_RULE);
+    if (!r.ok) throw new Error(friendly(p.error, NAME_RULE));
     store.set(KEY_NAME, p.name);
     return p;
   },
@@ -64,7 +76,7 @@ export const identity = {
   async addTestFunds(amount = 10) {
     const r = await fetch("/dev/credit", { method: "POST", headers: this.headers(), body: JSON.stringify({ amount }) });
     const p = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(p.error || "Could not add funds.");
+    if (!r.ok) throw new Error(friendly(p.error, "Could not add funds."));
     return p;
   },
 };

@@ -56,8 +56,12 @@ export class Room {
     return freed;
   }
   setPrivate(address: string, value: boolean) {
-    if (address !== this.host) throw new RoomError("Only the host can change that.", 403);
+    if (address !== this.host) throw new RoomError("Only the host can make the room private.", 403);
     this.private = value;
+  }
+  /** The undelayed room as the pages read it: seats, host, private flag, and what the viewer is in it. */
+  summary(viewer: string | null, names: Record<string, string>) {
+    return { seats: this.view(viewer, names), host: this.host, private: this.private, you: { host: viewer !== null && this.host === viewer, seat: viewer === null ? null : (this.seatOf(viewer)?.no ?? null) } };
   }
   view(viewer: string | null, names: Record<string, string>): SeatView[] {
     let bots = this.botCount();

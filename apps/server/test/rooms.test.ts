@@ -175,3 +175,37 @@ test("9: the spectate state carries seats (player address or bot or open), host 
   assert.equal(anon.state.seats[0].you, false);
   await app.close();
 });
+
+test("10: the private flag is undelayed and sticky: the host sets it and it holds across five delayed polls; a non-host is refused with the reason; the room leaves the list and quick play", async () => {
+  const { app, base, startRun } = await boot({ spectateDelay: 4 });   // the board snapshot is 4 s behind; the room must not be
+  const a = await startRun("Oly"); await new Promise((r) => setTimeout(r, 5));
+  const b = await startRun("Mira");
+  const host = "guest-HOSTROOM", other = "guest-NOTHOST1";
+  const took = await seat(base, b.runId, host).then((r) => r.json());
+  assert.equal(took.host, true); assert.equal(took.room.you.host, true); assert.equal(took.room.private, false);
+  assert.equal((await seat(base, b.runId, other).then((r) => r.json())).room.you.host, false);
+  const set = await fetch(`${base}/runs/${b.runId}/room`, { method: "POST", headers: hdr(host), body: JSON.stringify({ private: true }) });
+  assert.equal(set.status, 200);
+  const sj = await set.json();
+  assert.equal(sj.private, true); assert.deepEqual(sj.room.you, { host: true, seat: 1 });
+  for (let i = 1; i <= 5; i++) {
+    const feed = await fetch(`${base}/runs/${b.runId}/spectate?paced=1`, { headers: hdr(host) }).then((r) => r.json());
+    assert.equal(feed.room.private, true, `poll ${i}: top-level room`); assert.equal(feed.room.you.host, true);
+    assert.equal(feed.state.private, true, `poll ${i}: state copy`); assert.equal(feed.state.room.host, true);
+    for (const e of feed.events) if (e.state) assert.equal("private" in e.state, false, "event snapshots carry no room fields");
+  }
+  const refused = await fetch(`${base}/runs/${b.runId}/room`, { method: "POST", headers: hdr(other), body: JSON.stringify({ private: false }) });
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json()).error, "Only the host can make the room private.");
+  assert.equal((await fetch(`${base}/runs/${b.runId}/spectate`, { headers: hdr(other) }).then((r) => r.json())).room.private, true, "still private");
+  // an unidentified request (what the page used to send) is refused too, and changes nothing
+  assert.equal((await fetch(`${base}/runs/${b.runId}/room`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ private: false }) })).status, 400);
+  const list = await fetch(`${base}/api/v1/rooms`).then((r) => r.json());
+  assert.deepEqual(list.map((r: any) => r.runId), [a.runId], "the private room is not listed");
+  const quick = await fetch(`${base}/api/v1/rooms/quick`, { method: "POST", headers: hdr("guest-QUICK009"), body: "{}" }).then((r) => r.json());
+  assert.equal(quick.runId, a.runId, "quick play skips the private room");
+  // the host opens it again: back in the list at once
+  await fetch(`${base}/runs/${b.runId}/room`, { method: "POST", headers: hdr(host), body: JSON.stringify({ private: false }) });
+  assert.ok((await fetch(`${base}/api/v1/rooms`).then((r) => r.json())).some((r: any) => r.runId === b.runId));
+  await app.close();
+});

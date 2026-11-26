@@ -52,7 +52,8 @@ test("a mine planted on a nextHand card is armed before Byte can play it, and th
   await fetch(`${base}/api/v1/runs/${runId}/play`, { method: "POST", headers: auth, body: JSON.stringify({ word: s.safe }) });
   const refused = await fetch(`${base}/runs/${runId}/reveal-fiat`, { method: "POST", headers: hdr(guest), body: JSON.stringify({ trapId: sp.trap.id, word: s.safe, saltHex: toHex(salt) }) });
   assert.equal(refused.status, 400);
-  assert.match((await refused.json()).error, /safe card/);
+  // "safe card" while the tile is still open; if that play cleared the tile, the chain answers "not triggered" (a safe-card play is never recorded as spoken)
+  assert.match((await refused.json()).error, /safe card|not triggered/);
   await app.close();
 });
 

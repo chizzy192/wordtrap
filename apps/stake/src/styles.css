@@ -3,7 +3,9 @@
 * { box-sizing:border-box; }
 body { margin:0; background:radial-gradient(1200px 600px at 20% -10%,#1d1530 0%,var(--bg) 60%); color:var(--ink); font:14px/1.45 var(--mono); min-height:100vh; }
 header { display:flex; align-items:center; gap:14px; padding:14px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-.logo { font:24px var(--display); } .logo b { color:var(--hot); }
+.logo { display:flex; align-items:center; gap:10px; font:24px var(--display); color:var(--ink); text-decoration:none; }
+.logo img { display:block; height:26px; width:auto; } .logo b { color:var(--hot); }
+@media (min-width:640px) { .logo img { height:32px; } }
 .meta { color:var(--dim); margin-left:auto; font-size:12px; }
 main { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px 20px; max-width:1100px; margin:0 auto; }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }

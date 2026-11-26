@@ -151,21 +151,29 @@ Solana wallet) and hold a **ledger balance in integer micro-USD** on our server.
 unchanged: a fiat mine is an ordinary `plant_trap` signed by the treasury, and the browser computes
 the commitment with the treasury pubkey (`GET /api/v1/treasury`, also `state.treasury`).
 
-**Ledger credits require server-side verification via Pollar Server API v3; client callbacks are hints, not money.**
+**Ledger credits require server-side confirmation; nothing the browser says about money is trusted.**
+Sign-in is Pollar's SDK in the browser (`usePollar()`: `login`, `wallet`, `walletBalance`, `sendPayment`,
+`txHistory`); the server verifies the SDK access token with the secret key at Pollar Server API v3
+`POST /tokens/verify` (header `x-pollar-api-key`), caches it until `expiresAt`, and takes the player's
+identity from the Solana wallet address in the verified content. Funding is a USDC transfer the SDK sends
+from the player's wallet to the treasury; the server confirms the signature itself on Solana over `RPC_URL`.
 
 ```mermaid
 sequenceDiagram
-  participant V as Viewer browser (apps/stake)
+  participant V as Viewer browser (apps/stake, @pollar/react)
   participant P as Pollar
   participant S as Game server (fiat.ts)
   participant C as Chain (treasury signs)
   participant B as Byte (HTTP)
-  V->>P: Google sign-in creates a Pollar wallet · wallet top-up (local-currency rails are [ROADMAP])
-  P-->>V: payment id (hint)
-  V->>S: POST /api/v1/fiat/confirm {paymentId}
-  S->>P: GET payment by id (secret key)
-  P-->>S: status + amount
-  S->>S: credit ledger exactly once per payment id (pending if unverifiable)
+  V->>P: Google sign-in creates a Pollar wallet (SDK)
+  V->>S: every call carries Authorization: Bearer <SDK access token>
+  S->>P: POST /v3/tokens/verify {token} (secret key) → userId, wallet, network, expiresAt (cached)
+  V->>P: sendPayment({ chain: SOLANA, destination: treasury, amount, mint: USDC })
+  P-->>V: transaction signature (hash)
+  V->>S: POST /api/v1/fiat/confirm {signature, amount}
+  S->>C: getTransaction(signature) over RPC_URL (finalized, jsonParsed)
+  S->>S: sender = verified wallet · destination = treasury's USDC account · mint + amount match · same network
+  S->>S: credit ledger exactly once per signature (pending + retry if not finalized; never credited early)
   V->>V: salt + word stay in localStorage; commitment = sha256(v1|word|salt|TREASURY)
   V->>S: POST /runs/:id/plant-fiat {commitmentHex, stake}
   S->>S: debit ledger, record trapId → user
@@ -177,7 +185,7 @@ sequenceDiagram
   S->>C: reveal_trap (treasury)
   C-->>S: TrapFired(payout)
   S->>S: credit owner via trapId → user map
-  V->>P: off-ramp to bank [ROADMAP]
+  V->>P: cash top-up through a ramp order (GET /v3/ramps/orders/{id}) and off-ramp to bank [ROADMAP]
 ```
 
 | Invariant | Where |
@@ -186,8 +194,8 @@ sequenceDiagram
 | I2 word + salt stay in the browser until played; server reveals as treasury; no browser keys | `apps/stake/src/App.tsx`, `/runs/:id/reveal-fiat` |
 | I3 integer micro-USD everywhere | `fiat.ts` (`MICRO`, `toMicro`) |
 | I4 every change persisted with write-then-rename to `data/fiat-ledger.json` | `FiatLedger.save()` |
-| I5 credits only after the server verifies the payment with the secret key; exactly once per payment id; unverifiable → pending + retry | `confirmPayment()`, `PollarHttp`, 30 s retry loop |
-| I6 viewer identity validated server-side (Pollar session); mock mode uses plain `{user}` | `identify()` in `main.ts` |
+| I5 credits only after the server confirms the USDC transfer on Solana (finalized, right sender, destination, mint, amount, network); exactly once per signature; not final yet → pending + retry | `confirmUsdcPayment()`, `JsonRpc`, 30 s retry loop |
+| I6 viewer identity validated server-side: the SDK access token is verified at `POST /v3/tokens/verify` and the identity is the Solana wallet address; guests (`guest-…`) keep seats and names but can never be funded; mock mode uses plain `{user}` | `PollarServerApi`, `whoIs()` in `main.ts` |
 
 **Pick a side (`/side/:runId`).** Backers fund the pool through `/runs/:id/back-fiat`; trap setters
 take a seat and plant through the watch page. The state carries `backingOpen`, `backerCount`,
@@ -201,10 +209,15 @@ and that cut-off is enforced by the server only. In solana mode the program stil
 Demo-credit mode (no `POLLAR_SECRET_KEY`): the same code path with `MockPollar`; `POST /dev/credit`
 registers a fake paid payment and runs it through the verification. It is refused (403) off the mock chain.
 
-**Unverified against Pollar's docs (Nov 25):** docs.pollar.xyz was unreachable and the open-source SDK
-repo documents no server-side payment lookup or session-verification endpoint. `PollarHttp` isolates
-both behind `POLLAR_PAYMENT_PATH` and `POLLAR_SESSION_PATH`; confirm them before any real money.
-Webhooks are not built on purpose (Pollar lists them as upcoming); verification is pull-based.
+**Pollar facts this relies on (docs.pollar.xyz, SDK 0.12 / Server API v3, read Nov 26):** base URL
+`https://server.api.pollar.xyz/v3`, secret key in `x-pollar-api-key` (a publishable key is refused with
+`API_KEY_TYPE_NOT_ALLOWED`); verify errors `SDK_AUTH_TOKEN_EXPIRED`, `SDK_AUTH_INVALID_TOKEN` (401) and
+`SDK_TOKEN_WRONG_APPLICATION` (403) each map to one sentence for the player. There is no payment lookup
+endpoint, which is why confirmation is on-chain. Pollar's "testnet" on Solana is **devnet** (the SDK says
+so), so test mode pays devnet USDC (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`); a wallet on another
+network than `RPC_URL` is refused (409). The SDK exposes no access-token getter: the browser reads the
+session row the SDK persists (`pollar:<apiKeyHash>:session`). Webhooks are not built; everything is pull-based.
+Cash top-ups through ramp orders are [ROADMAP].
 
 ## Rooms and seats
 
@@ -213,7 +226,11 @@ taking one returns a seat number and a token, and `plant-fiat` is refused withou
 the caller; backing needs no seat. Bots fill the empty seats, one per seat, and step aside when a
 person sits down. A seat with no plant and no authenticated poll for 10 turns is freed and the feed
 says so. The first person seated is the host and can make the room private, which hides it from the
-lobby and from quick play. **Seats are enforced by the server, not on-chain:** the program only sees
+lobby and from quick play; anyone else is refused with "Only the host can make the room private."
+The room (seats, host, private flag) is never part of the delayed board history: every spectate
+response carries it live as a top-level `room`, event snapshots do not carry it, and the watch page
+keeps it in its own store, so a replayed snapshot can never put an older seat or room setting back
+on screen. **Seats are enforced by the server, not on-chain:** the program only sees
 the treasury planting, and it would accept a plant from anyone who signs it.
 
 ## Planning ahead and the delayed board

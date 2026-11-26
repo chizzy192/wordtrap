@@ -19,7 +19,7 @@ import { RunManager, type Run } from "./runs.ts";
 import { handleRisk, requirement, simVerifier, facilitatorVerifier } from "./oracle.ts";
 import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
-import { FiatLedger, FiatError, MockPollar, confirmPayment, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway } from "./fiat.ts";
+import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58, confirmPayment, confirmUsdcPayment, pollarFromEnv, toMicro, fromMicro, MICRO, type PollarGateway, type PollarSession, type SolanaRpc } from "./fiat.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
 import { MemoryProfileStore, validateName, shortAddress, type ProfileStore } from "./profiles.ts";
 import { RoomError } from "./rooms.ts";
@@ -58,8 +58,12 @@ export interface AppOptions {
   chainKind?: "mock" | "solana";
   /** Fiat ledger file (atomic JSON). `null` = in-memory. Default data/fiat-ledger.json or FIAT_LEDGER_PATH. */
   ledgerPath?: string | null;
-  /** Pollar gateway. Default: PollarHttp when POLLAR_SECRET_KEY is set, else MockPollar (demo credits). */
+  /** Pollar gateway. Default: PollarServerApi when POLLAR_SECRET_KEY is set, else MockPollar (demo credits). */
   pollar?: PollarGateway;
+  /** Solana RPC used to confirm USDC payments (Pollar mode). Default: JSON-RPC at RPC_URL (devnet). */
+  rpc?: SolanaRpc;
+  /** USDC mint for payments. Default: USDC_MINT env, else Circle's mint for the cluster RPC_URL points at. */
+  usdcMint?: string;
   /** Default spectator delay in seconds for GET /runs/:id/spectate (env SPECTATE_DELAY_SECONDS, default 4). Never affects the Byte API. */
   spectateDelay?: number;
   /** Player display names keyed by wallet address / guest id. Default: in memory. */
@@ -72,6 +76,16 @@ export interface AppOptions {
 
 export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; port(): number; listen(port: number): Promise<number>; close(): Promise<void> }
 const LEDGER_DEFAULT = fileURLToPath(new URL("../../../data/fiat-ledger.json", import.meta.url));
+/** Whether apps/stake was built with VITE_POLLAR_PUBLISHABLE_KEY: its index.html carries <meta name="wt-pollar" content="configured|missing">. */
+async function stakeBuildPollar(): Promise<"configured" | "missing" | "not built"> {
+  try {
+    const html = await readFile(fileURLToPath(new URL("../../stake/dist/index.html", import.meta.url)), "utf8");
+    const m = /<meta name="wt-pollar" content="(configured|missing)">/.exec(html);
+    return m ? (m[1] as "configured" | "missing") : "missing";
+  } catch { return "not built"; }
+}
+/** Content types for the static files the server hands out (brand files at the root, the stake build under /stake/). */
+const STATIC_TYPES: Record<string, string> = { ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json", ".json": "application/json", ".woff2": "font/woff2" };
 
 async function defaultChain(): Promise<Chain> {
   if (process.env.CHAIN === "solana") {
@@ -114,6 +128,12 @@ export function createApp(o: AppOptions = {}): App {
   const guestStartFunds = Math.max(0, o.guestStartFunds ?? (Number.isFinite(envGuest) ? envGuest : 10));
   const ledger = new FiatLedger(o.ledgerPath === undefined ? (process.env.FIAT_LEDGER_PATH ?? LEDGER_DEFAULT) : o.ledgerPath);
   const pollar = o.pollar ?? pollarFromEnv();
+  const rpc = o.rpc ?? new JsonRpc(process.env.RPC_URL ?? "https://api.devnet.solana.com");
+  /** Which Solana cluster RPC_URL points at (from its genesis hash), cached. */
+  let clusterCache: string | null = null;
+  const cluster = async () => (clusterCache ??= GENESIS[await rpc.getGenesisHash()] ?? "unknown");
+  const usdcMint = async () => o.usdcMint ?? process.env.USDC_MINT ?? ((await cluster()) === "mainnet" ? USDC_MINTS.mainnet : USDC_MINTS.devnet);
+  const treasuryAddress = async () => base58((runs.current()?.chain ?? (await makeChain())).treasury().pubkey);
 
   const crowdOn = !!(o.sim || o.crowd);
   const nameCache = new Map<string, string>();        // address -> display name, filled as profiles are read or written
@@ -139,28 +159,32 @@ export function createApp(o: AppOptions = {}): App {
     },
   });
 
-  // Pending Pollar payments (gateway unreachable / still processing) are re-verified in the background.
+  // Pending payments (not finalized yet / RPC unreachable) are re-checked in the background; never credited until confirmed.
   const retry = setInterval(async () => {
-    for (const { id, user } of ledger.pendingPayments()) {
-      try { await confirmPayment(ledger, pollar, id, user); }
-      catch (e) { console.warn(`[fiat] pending payment ${id} still unverified:`, (e as Error).message); }   // stays pending, never credited
+    for (const { id, user, micro } of ledger.pendingPayments()) {
+      try {
+        if (pollar.kind === "pollar") await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, id, { userId: "", wallet: user, network: "", expiresAt: 0 }, micro);
+        else await confirmPayment(ledger, pollar as MockPollar, id, user);
+      } catch (e) { console.warn(`[fiat] pending payment ${id} still unconfirmed:`, (e as Error).message); }   // stays pending (or was marked failed), never credited
     }
   }, 30_000);
   retry.unref();
 
-  /** I6: who is this viewer? Pollar session token (real mode) or a plain {user} (demo-credit mode). */
-  async function identify(req: IncomingMessage, body: Record<string, any>): Promise<string> {
-    if (pollar.kind === "pollar") {
-      const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
-      if (!m) throw new FiatError("sign in with Pollar: send Authorization: Bearer <session token>", 401);
-      const s = await pollar.verifySession(m[1].trim());
-      if (!s) throw new FiatError("Pollar session invalid or expired", 401);
-      return s.userId;
-    }
+  /** I6: who is this viewer? Pollar mode: the access token (Authorization: Bearer) is verified with Pollar and the
+   *  identity is the Solana wallet address; a guest id (guest-…) is still accepted for seats, names and rooms, but
+   *  it can never be funded. Demo-credit mode: a plain {user} / x-user. */
+  async function whoIs(req: IncomingMessage, body: Record<string, any>): Promise<{ id: string; session?: PollarSession }> {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
     const u = String(body.user ?? req.headers["x-user"] ?? "").trim().slice(0, 64);
-    if (!u) throw new FiatError("demo-credit mode: send {user}", 400);
-    return u;
+    if (pollar.kind === "pollar") {
+      if (m) { const s = await pollar.verifySession(m[1].trim()); return { id: s.wallet, session: s }; }
+      if (/^guest-[A-Za-z0-9]{4,}$/.test(u)) return { id: u };
+      throw new FiatError("Sign in with Google first.", 401);
+    }
+    if (!u) throw new FiatError("Sign in to play.", 401);
+    return { id: u };
   }
+  const identify = async (req: IncomingMessage, body: Record<string, any>) => (await whoIs(req, body)).id;
   const bal = (user: string) => ({ user, balanceMicro: ledger.balance(user), balanceUsd: fromMicro(ledger.balance(user)) });
 
   const server = createServer(async (req, res) => {
@@ -169,7 +193,15 @@ export function createApp(o: AppOptions = {}): App {
     try {
       if (req.method === "OPTIONS") { res.writeHead(204, CORS); return res.end(); }
       if (p === "/") return json(res, 200, { name: "WordTrap", api: "see /api/v1/spec", spec: "/api/v1/spec", health: "/healthz", watch: "/watch/{runId}" });
-      if (p === "/healthz") return json(res, 200, { ok: true });
+      if (p === "/healthz") {
+        // Pollar needs POLLAR_SECRET_KEY on the server at run time and VITE_POLLAR_PUBLISHABLE_KEY in the stake build at
+        // build time (the build records only whether it was set). Variable names only, never values.
+        const pollarMissing: string[] = [];
+        if (pollar.kind !== "pollar") pollarMissing.push("POLLAR_SECRET_KEY");
+        const stakeBuild = await stakeBuildPollar();
+        if (stakeBuild !== "configured") pollarMissing.push(`VITE_POLLAR_PUBLISHABLE_KEY (build time, apps/stake${stakeBuild === "not built" ? " not built" : ""})`);
+        return json(res, 200, { ok: true, pollar: pollarMissing.length ? "missing" : "configured", pollarMissing, stakeBuild });
+      }
 
       // ---- lobby ----
       if (p === "/play" || p === "/play/") {
@@ -230,12 +262,21 @@ export function createApp(o: AppOptions = {}): App {
         if (rel.includes("..")) return json(res, 400, { error: "bad path" });
         try {
           const body = await readFile(fileURLToPath(new URL(`../../stake/dist/${rel}`, import.meta.url)));
-          const type = rel.endsWith(".js") ? "text/javascript" : rel.endsWith(".css") ? "text/css" : rel.endsWith(".svg") ? "image/svg+xml" : "text/html; charset=utf-8";
+          const type = STATIC_TYPES[rel.slice(rel.lastIndexOf("."))] ?? "text/html; charset=utf-8";
           res.writeHead(200, { "content-type": type, "cache-control": rel === "index.html" ? "no-store" : "public, max-age=3600" });
           return res.end(body);
         } catch { return json(res, 404, { error: "stake page not built: run `npm run build -w apps/stake`" }); }
       }
 
+      // ---- brand files at the site root (favicons, touch icon, wordmarks, web app manifest) from apps/watch/public ----
+      const brand = /^\/([A-Za-z0-9_-]+\.(?:ico|png|webmanifest))$/.exec(p);
+      if (brand && req.method === "GET") {
+        try {
+          const body = await readFile(fileURLToPath(new URL(`../../watch/public/${brand[1]}`, import.meta.url)));
+          res.writeHead(200, { "content-type": STATIC_TYPES[brand[1].slice(brand[1].lastIndexOf("."))], "cache-control": "public, max-age=86400" });
+          return res.end(body);
+        } catch { return json(res, 404, { error: `no such file ${brand[1]}` }); }
+      }
       // ---- player identity: shared browser module + display-name profiles ----
       if (p === "/identity.js") {
         res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
@@ -263,7 +304,12 @@ export function createApp(o: AppOptions = {}): App {
       if (p === "/api/v1/treasury") {
         const chain = runs.current()?.chain ?? (await makeChain());
         const t = chain.treasury();
-        return json(res, 200, { setter: t.setter, pubkeyHex: toHex(t.pubkey), chain: chain.kind, mode: pollar.kind === "pollar" ? "pollar" : "demo-credits", guestStartFunds: chainKind === "mock" ? guestStartFunds : 0 });
+        const base = { setter: t.setter, pubkeyHex: toHex(t.pubkey), address: base58(t.pubkey), chain: chain.kind, mode: pollar.kind === "pollar" ? "pollar" : "demo-credits", guestStartFunds: chainKind === "mock" ? guestStartFunds : 0 };
+        if (pollar.kind !== "pollar") return json(res, 200, base);
+        // where to pay: the treasury's address and the USDC mint on the cluster this server confirms payments on
+        let net = "unknown", mint: string | null = null;
+        try { net = await cluster(); mint = await usdcMint(); } catch { /* RPC down: the page says so and retries */ }
+        return json(res, 200, { ...base, network: net, usdcMint: mint });
       }
       if (p === "/api/v1/fiat/balance" && req.method === "GET") {
         const user = await identify(req, Object.fromEntries(url.searchParams));
@@ -271,20 +317,28 @@ export function createApp(o: AppOptions = {}): App {
       }
       if (p === "/api/v1/fiat/confirm" && req.method === "POST") {
         const b = await readJson(req);
-        const user = await identify(req, b);
+        const who = await whoIs(req, b);
+        if (pollar.kind === "pollar") {
+          // { signature, amount }: the USDC transfer the Pollar wallet just sent; confirmed on Solana before any credit
+          if (!who.session) throw new FiatError("Sign in with Google to add funds.", 401);
+          const signature = String(b.signature ?? b.paymentId ?? "").trim();
+          if (!signature) throw new FiatError("signature required", 400);
+          const r = await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, signature, who.session, toMicro(Number(b.amount ?? 0)));
+          return json(res, r.status === "pending" ? 202 : 200, { signature, paymentId: signature, ...r, ...bal(who.id) });
+        }
         const paymentId = String(b.paymentId ?? "").trim();
         if (!paymentId) throw new FiatError("paymentId required", 400);
-        const r = await confirmPayment(ledger, pollar, paymentId, user);
-        return json(res, r.status === "pending" ? 202 : 200, { paymentId, ...r, ...bal(user) });
+        const r = await confirmPayment(ledger, pollar as MockPollar, paymentId, who.id);
+        return json(res, r.status === "pending" ? 202 : 200, { paymentId, ...r, ...bal(who.id) });
       }
       if (p === "/dev/credit" && req.method === "POST") {
-        if (chainKind !== "mock" || pollar.kind !== "mock") return json(res, 403, { error: "dev credits only exist in mock mode" });
+        if (chainKind !== "mock" || pollar.kind !== "mock") return json(res, 403, { error: "Test funds aren't available on this server. Sign in with Google to add funds." });
         const b = await readJson(req);
         const user = await identify(req, b);
         const micro = toMicro(Number(b.amount ?? 0));
         const paymentId = String(b.paymentId ?? `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
         (pollar as MockPollar).register(paymentId, user, micro);     // the "payment" the gateway will verify
-        const r = await confirmPayment(ledger, pollar, paymentId, user);
+        const r = await confirmPayment(ledger, pollar as MockPollar, paymentId, user);
         return json(res, 200, { paymentId, ...r, ...bal(user) });
       }
       // ---- rooms and seats (server-enforced; the program knows nothing about seats) ----
@@ -308,19 +362,19 @@ export function createApp(o: AppOptions = {}): App {
         const user = await identify(req, b);
         const turn = run.match.snapshot().turn;
         if (rs[2] === "room") {
-          run.room.setPrivate(user, !!b.private);
-          return json(res, 200, { runId: run.id, private: run.room.private, host: run.room.host === user });
+          run.room.setPrivate(user, !!b.private);                   // 403 "Only the host can make the room private."
+          return json(res, 200, { runId: run.id, private: run.room.private, host: run.room.host === user, room: run.room.summary(user, Object.fromEntries(nameCache)) });
         }
         if (b.action === "leave") {
           const left = run.room.leave(user);
           if (left) runs.announce(run, { type: "seat", action: "leave", seat: left.no, address: user, turn, detail: `${runs.nameOf(user)} left seat ${left.no}.` });
-          return json(res, 200, { runId: run.id, seat: null, seats: run.room.view(user, Object.fromEntries(nameCache)) });
+          return json(res, 200, { runId: run.id, seat: null, seats: run.room.view(user, Object.fromEntries(nameCache)), room: run.room.summary(user, Object.fromEntries(nameCache)) });
         }
         if (run.match.finished()) return json(res, 409, { error: "This run is over. Find another room." });
         const had = run.room.seatOf(user);
         const seat = run.room.take(user, turn);                     // 409 with a clear sentence when all four are taken
         if (!had) runs.announce(run, { type: "seat", action: "take", seat: seat.no, address: user, turn, detail: `${runs.nameOf(user)} took seat ${seat.no}.` });
-        return json(res, 200, { runId: run.id, seat: seat.no, token: seat.token, host: run.room.host === user, seats: run.room.view(user, Object.fromEntries(nameCache)) });
+        return json(res, 200, { runId: run.id, seat: seat.no, token: seat.token, host: run.room.host === user, seats: run.room.view(user, Object.fromEntries(nameCache)), room: run.room.summary(user, Object.fromEntries(nameCache)) });
       }
 
       // Undelayed picker for seated players: which cards exist on this, the next and the later tile. Never played words, hints or traps.
@@ -465,12 +519,12 @@ export function createApp(o: AppOptions = {}): App {
           const ids = new Set<string>([...feed.state.traps.map((t) => t.setter), ...Object.keys(ledger.backersOf(run.id)), ...run.room.humans().map((s) => s.address)]);
           const players = await profiles.names(ids);
           for (const [a, n] of Object.entries(players)) nameCache.set(a, n);
-          const seats = run.room.view(viewer, players);
-          const roomFields = { seats, host: run.room.host, private: run.room.private, room: { code: run.id, host: viewer !== null && run.room.host === viewer, private: run.room.private } };
-          const state = { ...feed.state, ...roomFields };
-          // paced events carry their own board snapshot; the room is not part of the board's history, so attach it to each
-          const events = feed.events.map((e: any) => (e.state ? { ...e, state: { ...e.state, ...roomFields } } : e));
-          return json(res, 200, { ...feed, events, state, players });
+          // The room (seats, host, private) is read live, never from the delayed board history: it comes as a
+          // top-level `room` object, and is also merged into `state` for older readers. Event snapshots do not
+          // carry it, so a replayed event can never put an older room setting back on screen.
+          const room = run.room.summary(viewer, players);
+          const state = { ...feed.state, seats: room.seats, host: room.host, private: room.private, room: { code: run.id, host: room.you.host, private: room.private } };
+          return json(res, 200, { ...feed, state, players, room });
         }
         // Mock-only viewer endpoints (production: viewers sign on-chain txs from mobile/Pollar).
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });
@@ -552,7 +606,11 @@ if (isMain) {
   const port = await app.listen(PORT);
   const mode = SIM ? "SIM (crowd + self-play driver)" : CROWD ? "CROWD (simulated viewers on every run)" : process.env.CHAIN ?? "mock";
   console.log(`WordTrap ${mode} · api http://localhost:${port}/api/v1 · spec /api/v1/spec · watch /watch/<runId>`);
-  console.log(`fiat: ${app.pollar.kind === "pollar" ? "Pollar (server-verified payments)" : "demo credits (POLLAR_SECRET_KEY unset)"} · ledger ${app.ledger.path ?? "in-memory"} · stake page /stake/`);
+  if (app.pollar.kind === "pollar") {
+    // never the keys: only which network and mint payments are confirmed on
+    const t: any = await fetch(`http://127.0.0.1:${port}/api/v1/treasury`).then((r) => r.json()).catch(() => ({}));
+    console.log(`fiat: Pollar sign-in (tokens verified server-side) · USDC payments confirmed on Solana ${t.network ?? "unknown"} · mint ${t.usdcMint ?? "unknown"} · treasury ${t.address ?? "?"} · ledger ${app.ledger.path ?? "in-memory"}`);
+  } else console.log(`fiat: demo credits (POLLAR_SECRET_KEY unset) · ledger ${app.ledger.path ?? "in-memory"} · stake page /stake/`);
   if (CROWD && process.env.CHAIN !== "solana") console.log(`crowd: ${crowd.setters} setters · aggression ${crowd.aggression} · backers $${crowd.backerUsd}`);
   if (SIM) {
     const base = `http://127.0.0.1:${port}`;

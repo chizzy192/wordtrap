@@ -55,10 +55,11 @@ Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) 
 | `PORT` | 8787 | Listen port. |
 | `CHAIN=solana` | mock | Real devnet program via `RPC_URL`, `AUTHORITY_KEYPAIR`, `USDC_MINT`. `CROWD` is a no-op here (warning at startup). |
 | `X402_FACILITATOR`, `ORACLE_PAYTO`, `X402_NETWORK` | sim verifier | Real x402 settlement for the risk oracle. |
-| `POLLAR_SECRET_KEY` | unset = demo credits | Server-side Pollar key: payments and viewer sessions are verified with it before any ledger credit. Never ship it to a browser. |
-| `POLLAR_API_URL`, `POLLAR_PAYMENT_PATH`, `POLLAR_SESSION_PATH` | `https://sdk.api.pollar.xyz/v3`, `/payments/{id}`, `/auth/session` | Pollar Server API endpoints. Unconfirmed against the docs (site unreachable on Nov 25); set them from the docs before real money. |
+| `POLLAR_SECRET_KEY` | unset = demo credits | Server-side Pollar secret key (`sec_testnet_…` / `sec_…`): every `Authorization: Bearer` token is verified at `POST /v3/tokens/verify` (header `x-pollar-api-key`) and the player's identity is the Solana wallet Pollar reports. Never printed, logged or shipped to a browser. |
+| `POLLAR_SERVER_API_URL` | `https://server.api.pollar.xyz/v3` | Pollar Server API base URL. |
+| `RPC_URL`, `USDC_MINT` | `https://api.devnet.solana.com`, Circle's USDC for that cluster | In Pollar mode the server confirms every USDC top-up itself over this RPC (finalized, sent by the verified wallet, received by the treasury, right mint and amount) before crediting, exactly once per signature. Pollar "testnet" means Solana **devnet**; a wallet on another network is refused. |
 | `FIAT_LEDGER_PATH` | `data/fiat-ledger.json` | Atomic JSON ledger: balances, payment ids, trap ownership, backer shares. |
-| `VITE_POLLAR_PUBLISHABLE_KEY`, `VITE_POLLAR_BASE_URL`, `VITE_SERVER_URL` | unset | Build-time settings for `apps/stake` (browser). |
+| `VITE_POLLAR_PUBLISHABLE_KEY` (`pub_testnet_…`), `VITE_POLLAR_BASE_URL`, `VITE_SERVER_URL` | unset | **Build time**, baked into `apps/stake` by `npm run build -w apps/stake`; the server cannot supply them later. Without the publishable key the stake and side pages run in demo mode even when the server has the secret key, and `GET /healthz` answers `"pollar": "missing"` with the names (never the values) of what is unset. Run time on the server: `POLLAR_SECRET_KEY`, optional `POLLAR_SERVER_API_URL`, `RPC_URL`, `USDC_MINT`. |
 
 ## The API Byte plays
 
@@ -68,12 +69,14 @@ Byte's hand. Without `SIM=1` the server just waits for Byte (or you, with curl) 
 | `GET /api/v1/runs/:id/state` | `Authorization: Bearer <apiKey>` | full state, no side effects |
 | `POST /api/v1/runs/:id/play` `{ "word": "...", "turn"?: n }` | Bearer | full state (400 bad word, 409 stale turn, both with `state`) |
 | `POST /api/v1/runs/:id/hint` · `/challenge` `{ "word" }` · `/defuse` · `/pass` | Bearer | full state |
-| `GET /runs/:id/spectate?after=seq` | public | `{ seq, events, state }` for the watch page and phone |
+| `GET /runs/:id/spectate?after=seq` | public | `{ seq, events, state, players, room }` for the watch page and phone. `room` (seats, host, private, `you`) is read live, never from the delayed board history. |
 | `GET /runs/:id/picker` | public | Undelayed "cards you can mine": the prompt, cards and safe card of this, the next and the later tile. Never played words, hints or traps. |
 | `POST /runs/:id/seat` `{ action: "take" \| "leave" }` | identity | Four seats per room. Taking returns `{ seat, token }`; a fifth person gets 409. `plant-fiat` needs the token in `x-seat-token`. Seats idle for 10 turns are freed. |
-| `POST /runs/:id/room` `{ private }` | host | The first person seated is the host; private rooms are hidden from the lobby and quick play. |
+| `POST /runs/:id/room` `{ private }` | host | The first person seated is the host; private rooms are hidden from the lobby and quick play. Anyone else gets 403 "Only the host can make the room private." Returns `{ private, host, room }`. |
 | `GET /api/v1/rooms` · `POST /api/v1/rooms/quick` | public · identity | Live public rooms (most people first, then newest); quick play seats you in the first one with a free seat. |
 | `POST /runs/:id/plant-fiat-batch` `{ items: [{ commitmentHex, stake }] }` | identity | Arm several cards in one action from the player's balance. Returns per-item results and the undelayed turn. |
+| `GET /api/v1/treasury` | public | Where fiat mines are planted from and where top-ups go: `pubkeyHex`, `address`, and in Pollar mode `usdcMint` and `network` (`devnet` / `mainnet`, from `RPC_URL`). |
+| `POST /api/v1/fiat/confirm` `{ signature, amount }` | Pollar sign-in | Confirms a USDC transfer to the treasury on Solana and credits the balance once per signature; `202 pending` until it is finalized (re-checked every 30 s). Demo mode takes `{ paymentId }` from `/dev/credit`. |
 | `GET /watch/:id` | public | the spectator page, with a `frame-ancestors` CSP header |
 | `GET /api/v1/spec` | public | `byte.game.json` |
 
@@ -94,8 +97,8 @@ word and salt and reveals through the server once Byte has played the card. Deta
 
 ```bash
 npm run stake:build                         # builds apps/stake → served by the game server at /stake/
-VITE_POLLAR_PUBLISHABLE_KEY=pk_... npm run build -w apps/stake   # Pollar mode (Google sign-in, card top-ups)
-POLLAR_SECRET_KEY=sk_... npm run dev        # server verifies payments + sessions with Pollar; otherwise demo credits
+VITE_POLLAR_PUBLISHABLE_KEY=pub_testnet_... npm run build -w apps/stake   # Pollar mode: @pollar/react sign-in, wallet, USDC top-ups, activity
+POLLAR_SECRET_KEY=sec_testnet_... RPC_URL=https://api.devnet.solana.com npm run dev   # server verifies tokens with Pollar and USDC payments on Solana; otherwise demo credits
 ```
 
 Without keys the page runs in **demo-credit mode**: `POST /dev/credit` funds a balance (mock chain only),

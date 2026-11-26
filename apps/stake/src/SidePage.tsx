@@ -4,7 +4,7 @@
 // Identity: the wallet address (Pollar / connected wallet) or a guest id made once; shown as the
 // display name or the short address. Watching never needs an account.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useIdentity, shortAddress } from "./App";
+import { useIdentity, shortAddress, friendly } from "./App";
 
 type Mode = "demo" | "pollar";
 const SERVER = (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "";
@@ -147,7 +147,7 @@ export function Side({ mode }: { mode: Mode }) {
     if (needFunds) { pending.current = "back"; return setPop("funds"); }
     setBusy(true); setMsg("");
     try { await api(`/runs/${runId}/back-fiat`, { amount: amt }); await refresh(); if (!reduced) { setStamp(true); setTimeout(() => setStamp(false), 300); } }
-    catch (e: any) { setMsg(e.message); if (/insufficient/i.test(e.message)) { pending.current = "back"; setPop("funds"); } }
+    catch (e: any) { setMsg(e.message); if (/not enough funds|insufficient/i.test(e.message)) { pending.current = "back"; setPop("funds"); } }
     finally { setBusy(false); }
   }
   async function takeSeat() {
@@ -158,7 +158,7 @@ export function Side({ mode }: { mode: Mode }) {
     try {
       const r = await fetch(`${SERVER}/runs/${runId}/seat`, { method: "POST", headers: id.headers(), body: JSON.stringify({ action: "take", ...(mode === "demo" ? { user: id.user } : {}) }) });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) { setMsg(j.error ?? "Could not take a seat."); setBusy(false); return; }   // e.g. "All four seats are taken. You can still back Byte."
+      if (!r.ok) { setMsg(friendly(j.error, "Could not take a seat.")); setBusy(false); return; }   // e.g. "All four seats are taken. You can still back Byte."
       try { localStorage.setItem(`wt.seat.${runId}`, j.token); } catch { /* private mode */ }    // the watch page planter sends this token
     } catch { setMsg("The server didn't answer. Try again in a moment."); setBusy(false); return; }
     location.href = `/watch/${runId}?plant=1`;
@@ -181,14 +181,15 @@ export function Side({ mode }: { mode: Mode }) {
   return (
     <div className="wrap">
       <header>
-        <div className="wordmark">Word<b>Trap</b></div>
+        <a className="wordmark" href="/play"><img className="wm-light" src="/wordtrap-wordmark-light.png" alt="WordTrap" width={120} height={32} /><img className="wm-dark" src="/wordtrap-wordmark-dark.png" alt="WordTrap" width={120} height={32} /></a>
+        <a className="nav" href="/play">Rooms</a>
         <span className="meta">{state ? (live ? `${who} is playing, turn ${state.turn}` : `${who} finished on turn ${state.turn}`) : "Waiting for a run"}</span>
         <span className="hright">
           {runId && <a className="back" href={`/watch/${runId}`}>Back to the board</a>}
           <span className="livewrap"><span className={`dot${live ? "" : " off"}`} role="img" aria-label={live ? "live" : "over"}></span>{live ? "Live" : state ? "Over" : "Waiting"}</span>
           <span className="account">
             {signedIn
-              ? <><span className="who" title={id.user}>{id.label}</span><span className="bal">{usd(balMicro / 1e6)}<small>{fundsKind}</small></span><button type="button" className="btn small yellow" onClick={() => setPop("funds")}>Add funds</button></>
+              ? <><span className="who" title={id.user}>{id.label}</span><span className="bal">{usd(balMicro / 1e6)}<small>{fundsKind}</small></span>{mode === "pollar" && <span className="bal"><span>{id.usdc === null ? "…" : usd(id.usdc)}</span><small>Wallet USDC</small></span>}<button type="button" className="btn small yellow" onClick={() => setPop("funds")}>Add funds</button></>
               : <button type="button" className="btn small" onClick={() => setPop("first")}>Sign in</button>}
           </span>
           <button id="themeBtn" type="button" aria-pressed={dark} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} onClick={toggleTheme}>
@@ -240,6 +241,11 @@ export function Side({ mode }: { mode: Mode }) {
               </>
             ) : state?.backingOpen === false ? (
               <p className="closedline">{pos?.backingClosed ?? "Backing closed when Byte cleared the first tile."}</p>
+            ) : !signedIn ? (
+              <>
+                <button className="btn blue wide" onClick={() => { pending.current = "back"; setPop("first"); }}>Sign in to back Byte</button>
+                <p className="soft">{treasury?.mode === "pollar" ? "Sign in with Google to back Byte from your wallet." : "Sign in with Google, or play as a guest with test funds."}</p>
+              </>
             ) : (
               <>
                 <div className="chips" role="group" aria-label="Amount">
@@ -248,11 +254,11 @@ export function Side({ mode }: { mode: Mode }) {
                     ? <input className="custom" inputMode="decimal" placeholder="0.00" aria-label="Custom amount in dollars" autoFocus value={custom} onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, ""))} />
                     : <button type="button" className="chip dashed" onClick={() => setShowCustom(true)}>Other amount</button>}
                 </div>
-                <p className="soft">{signedIn ? `${fundsKind} balance ${usd(balMicro / 1e6)}` : "Sign in or play as guest to back Byte."}</p>
+                <p className="soft">{`${fundsKind} balance ${usd(balMicro / 1e6)}`}</p>
                 <button className="btn blue wide" disabled={busy || !(amt > 0)} onClick={back}>{backLabel}</button>
               </>
             )}
-            {msg && <p className="msg" role="alert">{msg}</p>}
+            {msg && state?.backingOpen !== false && <p className="msg" role="alert">{msg}</p>}
           </section>
 
           <section className="panel setters" aria-labelledby="seth">
@@ -285,6 +291,7 @@ export function Side({ mode }: { mode: Mode }) {
         <div className="popover" role="dialog" aria-labelledby="fvTitle">
           <h2 id="fvTitle">Play or just watch</h2>
           <button type="button" className="btn blue wide" onClick={() => { if (mode === "pollar") id.signInGoogle(); else setGoogleHelp("Google sign-in isn't set up on this server yet. Play as a guest for now."); }}>Sign in with Google</button>
+          {mode === "pollar" && <button type="button" className="btn text" onClick={() => { setPop(null); id.openSignIn(); }}>Other ways to sign in</button>}
           {googleHelp && <div className="help">{googleHelp}</div>}
           <button type="button" className="btn yellow wide" onClick={playAsGuest}>Play as guest</button>
           <div className="help">Guests play with test funds.</div>

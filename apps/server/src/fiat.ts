@@ -3,8 +3,8 @@
 // all of their mines and backs. Invariants (docs/ARCHITECTURE.md "Fiat staking"):
 //   I1 treasury is the on-chain setter  I2 salt+word stay in the browser until played
 //   I3 integer micro-USD                I4 every change is persisted atomically
-//   I5 credits need SERVER-SIDE verification of the Pollar payment, exactly once per payment id
-//   I6 viewer identity is validated server-side (Pollar session) — mock mode: plain {user}
+//   I5 credits need SERVER-SIDE confirmation of the USDC payment on Solana, exactly once per signature
+//   I6 viewer identity is validated server-side (Pollar access token → wallet address) — mock mode: plain {user}
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -102,8 +102,8 @@ export class FiatLedger {
     p.status = "failed"; this.save();
   }
   payment(paymentId: string) { return this.d.payments[paymentId]; }
-  pendingPayments(): { id: string; user: string }[] {
-    return Object.entries(this.d.payments).filter(([, p]) => p.status === "pending").map(([id, p]) => ({ id, user: p.user }));
+  pendingPayments(): { id: string; user: string; micro: number }[] {
+    return Object.entries(this.d.payments).filter(([, p]) => p.status === "pending").map(([id, p]) => ({ id, user: p.user, micro: p.micro }));
   }
 
   ownTrap(trapId: string, o: Omit<TrapOwnership, "status">) { this.d.traps[trapId] = { ...o, status: "armed" }; this.save(); }
@@ -151,78 +151,209 @@ export class FiatLedger {
   }
 }
 
-// ---------------------------------------------------------------- Pollar gateway (I5, I6)
+// ---------------------------------------------------------------- Pollar sign-in (I6) and USDC funding (I5)
+//
+// Sign-in: the browser signs in through the Pollar SDK and sends its access token as `Authorization: Bearer`.
+// The server verifies it with the SECRET key at Pollar Server API v3 `POST /tokens/verify` and caches the
+// result until the token's `expiresAt`. The player's identity is the Solana wallet address Pollar reports.
+//
+// Funding: there is no payment lookup endpoint. The browser pays USDC to the treasury with the SDK's
+// `sendPayment({ chain: 'SOLANA', ... })` and posts the transaction signature; the server confirms it
+// on Solana itself through RPC_URL (finalized, sender = the verified wallet, destination = the treasury's
+// USDC token account, mint and amount match) and credits the ledger exactly once per signature.
+// Unconfirmed signatures stay pending and are retried; they are never credited.
+//
+// Cash top-ups through ramp orders (GET /v3/ramps/orders/{id}) are [ROADMAP].
 
-export interface PaymentLookup { status: "paid" | "pending" | "failed" | "unknown"; micro?: number; user?: string }
+export interface PollarSession {
+  /** Pollar user id (content.userId). */
+  userId: string;
+  /** The player's identity: the Solana wallet address (content.wallet). */
+  wallet: string;
+  /** Pollar network of the application: "testnet" (Solana devnet) or "mainnet". */
+  network: "testnet" | "mainnet" | string;
+  /** Unix ms when the token stops being valid. */
+  expiresAt: number;
+  authProvider?: string;
+}
 export interface PollarGateway {
   readonly kind: "mock" | "pollar";
-  /** Look a payment / funding / ramp order up by id with the SECRET key. Client callbacks are hints, not money. */
-  lookupPayment(paymentId: string): Promise<PaymentLookup>;
-  /** Validate a viewer session token and return the Pollar user id. */
-  verifySession(token: string): Promise<{ userId: string } | null>;
+  /** Validate a viewer access token. Throws FiatError (401/403/503) with a clear sentence. */
+  verifySession(token: string): Promise<PollarSession>;
 }
 
 /** Demo-credit mode: no Pollar keys. Payments are registered by POST /dev/credit; sessions are plain user names. */
+export interface PaymentLookup { status: "paid" | "pending" | "failed" | "unknown"; micro?: number; user?: string }
 export class MockPollar implements PollarGateway {
   readonly kind = "mock" as const;
   readonly payments = new Map<string, PaymentLookup>();
   register(paymentId: string, user: string, micro: number, status: PaymentLookup["status"] = "paid") { this.payments.set(paymentId, { status, micro, user }); }
   async lookupPayment(id: string): Promise<PaymentLookup> { return this.payments.get(id) ?? { status: "unknown" }; }
-  async verifySession(token: string) { const m = /^mock:(.+)$/.exec(token); return m ? { userId: m[1] } : null; }
+  async verifySession(token: string): Promise<PollarSession> {
+    const m = /^mock:(.+)$/.exec(token);
+    if (!m) throw new FiatError("That sign-in is not valid. Sign in again.", 401);
+    return { userId: m[1], wallet: m[1], network: "testnet", expiresAt: Date.now() + 3_600_000 };
+  }
+}
+
+/** What each Pollar error code means to a player. */
+export const POLLAR_ERRORS: Record<string, { msg: string; code: number }> = {
+  SDK_AUTH_TOKEN_EXPIRED: { msg: "Your Pollar sign-in has expired. Sign in again.", code: 401 },
+  SDK_AUTH_INVALID_TOKEN: { msg: "That Pollar sign-in is not valid. Sign in again.", code: 401 },
+  SDK_TOKEN_WRONG_APPLICATION: { msg: "That sign-in belongs to a different Pollar application. Sign in here again.", code: 403 },
+};
+
+/**
+ * Real gateway: Pollar Server API v3 (`https://server.api.pollar.xyz/v3`), secret key in `x-pollar-api-key`.
+ * `POST /tokens/verify { token }` → `{ code: "SERVER_TOKEN_VERIFIED", content: { userId, applicationId, expiresAt,
+ * network, wallet, profile, authProvider } }`. Verified tokens are cached until `expiresAt`.
+ */
+export class PollarServerApi implements PollarGateway {
+  readonly kind = "pollar" as const;
+  private readonly base: string; private readonly secret: string;
+  private readonly cache = new Map<string, PollarSession>();
+  constructor(o: { secretKey: string; baseUrl?: string }) {
+    this.secret = o.secretKey;
+    this.base = (o.baseUrl ?? "https://server.api.pollar.xyz/v3").replace(/\/$/, "");
+  }
+  async verifySession(token: string): Promise<PollarSession> {
+    const hit = this.cache.get(token);
+    if (hit && hit.expiresAt > Date.now()) return hit;
+    this.cache.delete(token);
+    let r: Response;
+    try {
+      r = await fetch(`${this.base}/tokens/verify`, { method: "POST", headers: { "x-pollar-api-key": this.secret, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ token }), signal: AbortSignal.timeout(15_000) });
+    } catch { throw new FiatError("Pollar is not answering. Try again in a moment.", 503); }
+    const p: any = await r.json().catch(() => ({}));
+    const code = String(p.code ?? "");
+    if (!r.ok || code !== "SERVER_TOKEN_VERIFIED") {
+      const known = POLLAR_ERRORS[code];
+      if (known) throw new FiatError(known.msg, known.code);
+      if (r.status >= 500 || r.status === 429) throw new FiatError("Pollar is not answering. Try again in a moment.", 503);
+      throw new FiatError("Pollar could not verify that sign-in. Sign in again.", 401);
+    }
+    const c = p.content ?? {};
+    const wallet = walletAddress(c.wallet, c.wallets);
+    if (!wallet) throw new FiatError("Your Pollar account has no Solana wallet yet. Open the wallet page once, then try again.", 403);
+    const expiresAt = toMs(c.expiresAt);
+    const s: PollarSession = { userId: String(c.userId ?? ""), wallet, network: String(c.network ?? ""), expiresAt, authProvider: c.authProvider ? String(c.authProvider) : undefined };
+    if (expiresAt > Date.now()) this.cache.set(token, s);
+    if (this.cache.size > 5000) for (const [k, v] of this.cache) if (v.expiresAt <= Date.now()) this.cache.delete(k);
+    return s;
+  }
+}
+/** content.wallet is documented as the wallet; accept a bare address, a wallet object, or a list with a SOLANA entry. */
+function walletAddress(w: any, ws?: any): string | null {
+  const pick = (x: any): string | null => {
+    if (!x) return null;
+    if (typeof x === "string") return x;
+    if (Array.isArray(x)) { const sol = x.find((e) => String(e?.chain ?? "").toUpperCase() === "SOLANA") ?? x[0]; return pick(sol); }
+    if (x.chain && String(x.chain).toUpperCase() !== "SOLANA" && Array.isArray(ws)) { const sol = ws.find((e: any) => String(e?.chain ?? "").toUpperCase() === "SOLANA"); if (sol) return pick(sol); }
+    return typeof x.address === "string" ? x.address : typeof x.publicKey === "string" ? x.publicKey : null;
+  };
+  return pick(w) ?? pick(ws);
+}
+const toMs = (x: any): number => { if (typeof x === "number") return x < 1e12 ? x * 1000 : x; const t = Date.parse(String(x ?? "")); return Number.isFinite(t) ? t : 0; };
+
+// ---------------------------------------------------------------- Solana: confirm a USDC transfer over RPC
+
+export interface SolanaRpc {
+  /** `getTransaction(sig, { encoding: "jsonParsed", commitment: "finalized" })`; null when not finalized / unknown. */
+  getTransaction(signature: string): Promise<any | null>;
+  /** The cluster's genesis hash, which says which network RPC_URL points at. */
+  getGenesisHash(): Promise<string>;
+}
+export class JsonRpc implements SolanaRpc {
+  private genesis: string | null = null;
+  readonly url: string;
+  constructor(url: string) { this.url = url; }
+  private async call(method: string, params: unknown[]) {
+    let r: Response;
+    try { r = await fetch(this.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(15_000) }); }
+    catch { throw new FiatError("The Solana RPC is not answering. The payment stays pending and is re-checked.", 503); }
+    const j: any = await r.json().catch(() => ({}));
+    if (j.error) throw new FiatError(`Solana RPC: ${j.error.message ?? "error"}`, 503);
+    return j.result;
+  }
+  getTransaction(signature: string) { return this.call("getTransaction", [signature, { encoding: "jsonParsed", commitment: "finalized", maxSupportedTransactionVersion: 0 }]); }
+  async getGenesisHash() { return (this.genesis ??= String(await this.call("getGenesisHash", []))); }
+}
+
+export const GENESIS: Record<string, "mainnet" | "devnet" | "testnet"> = {
+  "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d": "mainnet",
+  EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG: "devnet",
+  "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY": "testnet",
+};
+/** Circle's USDC mints. Pollar "testnet" on Solana means devnet (its SDK says so), hence devnet USDC. */
+export const USDC_MINTS = { mainnet: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", devnet: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" } as const;
+/** Pollar's network word → the Solana cluster it means. */
+export const pollarCluster = (network: string): "mainnet" | "devnet" | null => (network === "mainnet" ? "mainnet" : network === "testnet" ? "devnet" : null);
+
+export interface UsdcConfig {
+  /** Treasury wallet address (base58). Its USDC token account is the destination. */
+  treasury: string;
+  /** USDC mint on the cluster RPC_URL points at. */
+  mint: string;
 }
 
 /**
- * Real gateway: Pollar Server API v3 with the secret key (server env only).
- * STATUS (Nov 25): docs.pollar.xyz was unreachable and the open-source SDK repo documents no
- * server-side payment lookup or session verification endpoint, so the two paths below are
- * CONFIGURABLE and must be confirmed against the docs before mainnet:
- *   POLLAR_PAYMENT_PATH  default /payments/{id}      (GET, Authorization: Bearer <secret>)
- *   POLLAR_SESSION_PATH  default /auth/session       (POST {token}, Authorization: Bearer <secret>)
- * Unverifiable payments stay "pending" and are retried; they are never credited.
+ * Confirm one USDC payment on-chain and credit it exactly once per signature.
+ * Refuses (and marks failed) when the sender is not the player's wallet, the treasury did not receive
+ * the mint, or the amount differs. Not yet finalized → pending (retried), never credited.
  */
-export class PollarHttp implements PollarGateway {
-  readonly kind = "pollar" as const;
-  private readonly base: string; private readonly secret: string; private readonly paymentPath: string; private readonly sessionPath: string;
-  constructor(o: { secretKey: string; baseUrl?: string; paymentPath?: string; sessionPath?: string }) {
-    this.secret = o.secretKey;
-    this.base = (o.baseUrl ?? "https://sdk.api.pollar.xyz/v3").replace(/\/$/, "");
-    this.paymentPath = o.paymentPath ?? "/payments/{id}";
-    this.sessionPath = o.sessionPath ?? "/auth/session";
+export async function confirmUsdcPayment(ledger: FiatLedger, rpc: SolanaRpc, cfg: UsdcConfig, signature: string, session: PollarSession, amountMicro: number) {
+  const user = session.wallet;
+  const existing = ledger.payment(signature);
+  if (existing?.status === "credited") return { status: "credited" as const, credited: false, duplicate: true, micro: existing.micro };
+  if (!/^[1-9A-HJ-NP-Za-km-z]{64,100}$/.test(signature)) throw new FiatError("That is not a Solana transaction signature.", 400);
+  if (!Number.isInteger(amountMicro) || amountMicro <= 0) throw new FiatError("Say how much USDC the payment was.", 400);
+  // the player's Pollar app and this server must be on the same Solana network
+  const cluster = GENESIS[await rpc.getGenesisHash()] ?? "unknown";
+  const theirs = pollarCluster(session.network);
+  if (theirs && theirs !== cluster) throw new FiatError(`Your Pollar wallet is on Solana ${theirs}, but this server settles on Solana ${cluster}. That payment cannot be credited here.`, 409);
+  const tx = await rpc.getTransaction(signature);
+  if (!tx) { ledger.markPending(signature, user, amountMicro); return { status: "pending" as const, credited: false, duplicate: false, micro: amountMicro }; }
+  if (tx.meta?.err) { ledger.markFailed(signature); throw new FiatError("That transaction failed on Solana. Nothing was credited.", 402); }
+  const deltas = tokenDeltas(tx, cfg.mint);
+  const received = deltas.filter((d) => d.owner === cfg.treasury).reduce((n, d) => n + d.delta, 0n);
+  const sent = deltas.filter((d) => d.owner === user).reduce((n, d) => n - d.delta, 0n);
+  if (received <= 0n) { ledger.markFailed(signature); throw new FiatError("That transaction did not pay USDC to the game treasury.", 402); }
+  if (sent <= 0n) { ledger.markFailed(signature); throw new FiatError("That payment was not sent from your Pollar wallet.", 403); }
+  if (received !== BigInt(amountMicro)) { ledger.markFailed(signature); throw new FiatError(`The treasury received $${(Number(received) / MICRO).toFixed(2)}, not $${(amountMicro / MICRO).toFixed(2)}.`, 402); }
+  const r = ledger.creditFromPayment(signature, user, amountMicro);
+  return { status: "credited" as const, ...r, micro: amountMicro };
+}
+/** Per token account owner: post − pre balance (base units) for one mint, from the transaction's token balances. */
+function tokenDeltas(tx: any, mint: string): { owner: string; delta: bigint }[] {
+  const pre = new Map<number, bigint>(), owners = new Map<number, string>();
+  for (const b of tx.meta?.preTokenBalances ?? []) if (b.mint === mint) { pre.set(b.accountIndex, BigInt(b.uiTokenAmount?.amount ?? 0)); if (b.owner) owners.set(b.accountIndex, b.owner); }
+  const out: { owner: string; delta: bigint }[] = [];
+  const seen = new Set<number>();
+  for (const b of tx.meta?.postTokenBalances ?? []) if (b.mint === mint) {
+    seen.add(b.accountIndex);
+    const owner = b.owner ?? owners.get(b.accountIndex);
+    if (owner) out.push({ owner, delta: BigInt(b.uiTokenAmount?.amount ?? 0) - (pre.get(b.accountIndex) ?? 0n) });
   }
-  private headers() { return { authorization: `Bearer ${this.secret}`, "content-type": "application/json", accept: "application/json" }; }
+  for (const [i, p] of pre) if (!seen.has(i) && owners.get(i)) out.push({ owner: owners.get(i)!, delta: -p });   // account closed in this tx
+  return out;
+}
 
-  async lookupPayment(id: string): Promise<PaymentLookup> {
-    const r = await fetch(this.base + this.paymentPath.replace("{id}", encodeURIComponent(id)), { headers: this.headers() });
-    if (r.status === 404) return { status: "unknown" };
-    if (!r.ok) return { status: "pending" };                         // 5xx / 429: retry later, never credit
-    const p: any = await r.json();
-    const raw = String(p.status ?? p.state ?? "").toUpperCase();
-    const status: PaymentLookup["status"] =
-      ["SUCCESS", "CREDITED", "PAID", "COMPLETED", "SETTLED", "MINTED"].includes(raw) ? "paid"
-      : ["FAILED", "CANCELLED", "CANCELED", "EXPIRED", "REJECTED"].includes(raw) ? "failed" : "pending";
-    const cur = String(p.currency ?? p.fiat ?? p.asset ?? "USD").toUpperCase();
-    const usd = Number(p.amount_usd ?? p.amountUsd ?? (cur === "USD" || cur === "USDC" ? p.amount : NaN));
-    const micro = Number.isFinite(usd) ? Math.round(usd * MICRO) : undefined;
-    const user = p.user_id ?? p.userId ?? p.user?.id ?? p.owner ?? undefined;
-    return status === "paid" && micro === undefined ? { status: "pending", user } : { status, micro, user };
-  }
-
-  async verifySession(token: string) {
-    const r = await fetch(this.base + this.sessionPath, { method: "POST", headers: this.headers(), body: JSON.stringify({ token }) });
-    if (!r.ok) return null;
-    const p: any = await r.json();
-    const userId = p.user_id ?? p.userId ?? p.sub ?? p.user?.id ?? p.id;
-    return userId ? { userId: String(userId) } : null;
-  }
+/** base58 (Bitcoin alphabet) for a 32-byte pubkey; keeps the server free of wallet libraries. */
+export function base58(bytes: Uint8Array): string {
+  const A = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let n = 0n; for (const b of bytes) n = (n << 8n) | BigInt(b);
+  let s = ""; while (n > 0n) { s = A[Number(n % 58n)] + s; n /= 58n; }
+  for (const b of bytes) { if (b !== 0) break; s = "1" + s; }
+  return s;
 }
 
 export function pollarFromEnv(env: NodeJS.ProcessEnv = process.env): PollarGateway {
   if (!env.POLLAR_SECRET_KEY) return new MockPollar();
-  return new PollarHttp({ secretKey: env.POLLAR_SECRET_KEY, baseUrl: env.POLLAR_API_URL, paymentPath: env.POLLAR_PAYMENT_PATH, sessionPath: env.POLLAR_SESSION_PATH });
+  return new PollarServerApi({ secretKey: env.POLLAR_SECRET_KEY, baseUrl: env.POLLAR_SERVER_API_URL });
 }
 
-/** Verify + credit once. Pending/unknown payments are recorded for retry, never credited. */
-export async function confirmPayment(ledger: FiatLedger, gw: PollarGateway, paymentId: string, user: string) {
+/** Demo-credit mode: verify a registered mock payment and credit once. Pending/unknown payments are recorded for retry. */
+export async function confirmPayment(ledger: FiatLedger, gw: MockPollar, paymentId: string, user: string) {
   const existing = ledger.payment(paymentId);
   if (existing?.status === "credited") return { status: "credited" as const, credited: false, duplicate: true, micro: existing.micro };
   const p = await gw.lookupPayment(paymentId);

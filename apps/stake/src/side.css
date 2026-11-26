@@ -11,7 +11,14 @@ body { margin:0; color:var(--text); background:var(--board); background-image:ra
 body { font-size:var(--body); }
 .wrap { margin:0; padding:0 var(--side) var(--gap); overflow-x:clip; }
 header { display:flex; align-items:center; gap:14px; padding:22px 0 10px; flex-wrap:wrap; }
-.wordmark { font:800 30px/1 var(--cond); letter-spacing:-.5px; } .wordmark b { color:var(--red); }
+.wordmark { display: block; line-height: 0; flex: 0 0 auto; }
+.wordmark img { display: block; height: 26px; width: auto; }
+.wordmark .wm-dark { display: none; }
+.nav { font-weight:600; color:var(--blue-text); text-decoration:none; border-bottom:2px solid currentColor; padding-bottom:1px; }
+.nav:hover { color:var(--red-text); }
+:root[data-theme="dark"] .wordmark .wm-light { display: none; }
+:root[data-theme="dark"] .wordmark .wm-dark { display: block; }
+@media (min-width: 640px) { .wordmark img { height: 32px; } }
 .meta { color:var(--soft); }
 .hright { margin-left:auto; display:flex; align-items:center; gap:16px; }
 .back { color:var(--blue-text); font-weight:600; text-decoration:none; }

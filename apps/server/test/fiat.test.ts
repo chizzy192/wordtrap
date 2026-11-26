@@ -114,7 +114,7 @@ test("duplicate payment confirmation (same paymentId twice) credits exactly once
   const pending = await post(base, "/api/v1/fiat/confirm", { user: "carol", paymentId: "pay_unknown" });
   assert.equal(pending.status, 202);
   assert.equal((await pending.json()).balanceMicro, 3 * MICRO);
-  assert.deepEqual(app.ledger.pendingPayments(), [{ id: "pay_unknown", user: "carol" }]);
+  assert.deepEqual(app.ledger.pendingPayments(), [{ id: "pay_unknown", user: "carol", micro: 0 }]);
   // the gateway later says paid → the retry path credits it once
   (app.pollar as MockPollar).register("pay_unknown", "carol", 2 * MICRO);
   const later = await post(base, "/api/v1/fiat/confirm", { user: "carol", paymentId: "pay_unknown" }).then((r) => r.json());

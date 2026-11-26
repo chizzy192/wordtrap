@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-light-32.png" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-dark-32.png" media="(prefers-color-scheme: dark)">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<meta name="theme-color" content="#FFD60A">
 <title>WordTrap — Pick a room</title>
 <meta name="color-scheme" content="light dark" />
 <script>
@@ -30,7 +36,12 @@ body { margin:0; color:var(--text); background:var(--board); background-image:ra
 body { font-size:var(--body); }
 .wrap { margin:0; padding:0 var(--side) var(--gap); overflow-x:clip; }
 header { display:flex; align-items:center; gap:14px; padding:22px 0 10px; flex-wrap:wrap; }
-.wordmark { font:800 30px/1 var(--cond); letter-spacing:-.5px; } .wordmark b { color:var(--red); }
+.wordmark { display: block; line-height: 0; flex: 0 0 auto; }
+.wordmark img { display: block; height: 26px; width: auto; }
+.wordmark .wm-dark { display: none; }
+:root[data-theme="dark"] .wordmark .wm-light { display: none; }
+:root[data-theme="dark"] .wordmark .wm-dark { display: block; }
+@media (min-width: 640px) { .wordmark img { height: 32px; } }
 .meta { color:var(--soft); }
 #themeBtn { width:44px; height:44px; border-radius:50%; border:3px solid var(--line); background:var(--board); color:var(--text); cursor:pointer; display:grid; place-items:center; padding:0; }
 .account { margin-left:auto; display:flex; align-items:center; gap:10px; }
@@ -96,7 +107,7 @@ h2 { font:600 17px/1.2 var(--sans); margin:26px 0 10px; }
 <body>
 <div class="wrap">
 <header>
-  <div class="wordmark">Word<b>Trap</b></div>
+  <a class="wordmark" href="/play"><img class="wm-light" src="/wordtrap-wordmark-light.png" alt="WordTrap" width="120" height="32"><img class="wm-dark" src="/wordtrap-wordmark-dark.png" alt="WordTrap" width="120" height="32"></a>
   <span class="meta">Byte plays, you plant mines</span>
   <div class="account" id="account"><button type="button" class="btn small" id="signInBtn">Sign in</button></div>
   <button id="themeBtn" type="button" aria-pressed="false" aria-label="Switch to dark theme" title="Switch theme">
@@ -197,7 +208,7 @@ $("quick").onclick = async () => {
       const r = await fetch("/api/v1/rooms/quick", { method: "POST", headers: identity.headers(), body: JSON.stringify({ user: identity.id }) });
       const j = await r.json().catch(() => ({}));
       if (r.ok) { code = j.code; try { localStorage.setItem(`wt.seat.${j.runId}`, j.token); } catch (e) { /* private mode */ } }
-      else if (r.status === 404) { $("quickMsg").className = "msg err"; $("quickMsg").textContent = j.error ?? EMPTY; return; }
+      else if (r.status === 404) { $("quickMsg").className = "msg err"; $("quickMsg").textContent = friendly(j.error, EMPTY); return; }
     }
     if (!code) { const pick = rooms.find((x) => x.seats.some((s) => s === "open" || s === "bot")); code = pick?.code ?? null; }   // bots step aside for people
     if (code) return go(code);
@@ -207,6 +218,8 @@ $("quick").onclick = async () => {
   finally { b.classList.remove("pressed"); b.disabled = false; b.textContent = label; }
 };
 $("rooms").addEventListener("click", (e) => { const b = e.target.closest("button[data-code]"); if (b) go(b.dataset.code); });
+// Arriving with ?room=<code> (a shared link) opens that room; without it the room list is always shown first.
+{ const wanted = new URLSearchParams(location.search).get("room"); if (wanted && /^[a-z0-9]{6,20}$/i.test(wanted)) go(wanted.toLowerCase()); }
 $("codeForm").onsubmit = async (e) => {
   e.preventDefault();
   const code = $("code").value.trim().toLowerCase();
@@ -222,7 +235,7 @@ $("codeForm").onsubmit = async (e) => {
 };
 
 // ---- account area (shared identity module) ----
-const { identity, validName } = await import("/identity.js");
+const { identity, validName, friendly } = await import("/identity.js");
 let treasury = null, balanceMicro = null;
 const usd = (n) => "$" + Number(n || 0).toFixed(2);
 const popovers = ["firstVisit", "namePrompt", "fundsPanel"];
