@@ -533,7 +533,7 @@ body.tight4 .fuselabel { margin-top: 0; font-size: .8em; }
   <div class="leftcol">
   <section class="left">
     <div class="tileno" id="tileNo">Tile — of —</div>
-    <p class="deckline" id="deckLine" hidden>Today's deck: <b id="deckTheme"></b><a id="deckSrc" href="#" target="_blank" rel="noreferrer">from <span id="deckSite"></span></a></p>
+    <p class="deckline" id="deckLine" hidden>Today's deck: <b id="deckTheme"></b></p>
     <div class="strip" id="promptStrip"><h1 id="prompt">Waiting for a run to start</h1><span id="shieldTag" aria-hidden="true">Shielded</span></div>
     <div id="need">Byte will pick up its first hand when the run begins.</div>
     <div id="deciding" class="deciding" hidden>Byte is deciding</div>
@@ -797,7 +797,7 @@ function render() {
 
   const tile = s.tiles[s.position];
   $("tileNo").textContent = tile ? `Tile ${s.position + 1} of ${s.tiles.length}` : `All ${s.tiles.length} tiles done`;
-  if (s.deck?.theme) { $("deckTheme").textContent = s.deck.theme; $("deckSite").textContent = s.deck.site || "the web"; $("deckSrc").href = s.deck.sourceUrl || "#"; $("deckLine").hidden = false; } else $("deckLine").hidden = true;
+  if (s.deck?.theme) { $("deckTheme").textContent = s.deck.theme; $("deckLine").hidden = false; } else $("deckLine").hidden = true;   // the title only, never a link off the board
   $("board").innerHTML = s.tiles.map((t, i) =>
     `<div class="seg ${t.cleared ? "done" : ""} ${i === s.position ? "here" : ""}" title="${esc(t.prompt)}"></div>`).join("") +
     `<div class="seg exit">Exit</div>`;

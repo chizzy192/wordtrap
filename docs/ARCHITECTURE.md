@@ -295,8 +295,31 @@ word list; the prompt also asks for neutral, playful categories only); a deck ne
 no scheduler: a run that finds no deck for today starts a background refresh (one in flight, three attempts a day,
 never blocking the run) and plays the newest stored deck, else the built-in one; `POST /api/v1/decks/refresh`
 (`x-admin-token`) refreshes on demand. The deck is chosen before the run exists, so before any seat, and is fixed
-for the run; `state.deck` names it and the board shows "Today's deck: <theme>" with a link to the source.
+for the run; `state.deck` names it and the board shows "Today's deck: <theme>" (a 2 to 5 word title, no link).
 `/healthz` reports `decks: today | stale | builtin`.
+
+**Clue quality** (enforced in `validateDeck`, not only in the prompt). The built-in deck's clues are never bare
+categories: they are constraints ("Name three fruits you'd pack for a picnic"), situations ("Order food at a pizza
+place", "Give a weather forecast for tomorrow"), tasks with wordplay ("Describe the ocean in five words", "Explain what
+a blockchain is to a child") and associations ("Describe your morning routine"). Web tiles must match: a clue is 3 to
+8 words with an angle (one or two words, or a lone plural noun, is a bare category and is rejected); every tile is
+labelled with one of five styles (constraint, situation, association from the page, letter play, odd one in) and a
+deck needs at least three of them; at least 4 of 7 tiles come from the page, and each tile stores a "why" under 12
+words in the model's own wording (never displayed, never page text). Letter play is checked in code for every answer
+(double letter, start/end with a letter, same first and last letter, N-letter words, without a letter, every vowel,
+palindromes, and "rhymes with X" through the Datamuse API, no key, cached; unreachable = the tile is dropped); a
+letter tile with one failing answer is dropped. A short deck (5 or 6 survivors) is topped up with letter-play tiles
+built from Datamuse rhymes of the clues' own words, verified by construction. Every stored deck has a score 0 to 100:
+clue variety (25), no bare or weak categories (25), share of page-derived tiles (25), answer spread with no near-synonym
+pairs (25); it is logged and stored (`decks.score`), page text never is, and only decks scoring 70 or more are played.
+Byte's document and the state shape are unchanged: style, why and score never leave the server.
+
+**Rotation.** A new run picks at random, with equal weight among the kinds available: the built-in deck, a curated
+deck (`apps/server/config/decks/*.json`, hand-written in the built-in tile format; a file joins once it has 7 playable
+tiles) and today's web deck (70+ only). **Sources** checked on 27 Nov 2026 before adding: National Day Calendar and
+Atlas Obscura answer 403 to automated fetches (Atlas Obscura's robots also bars AI crawlers) and were skipped; Guinness
+World Records' terms allow personal, non-commercial use only and forbid derivative versions, so it was skipped;
+Wikipedia (CC BY-SA, robots allow) and NASA APOD (public domain, no robots) stay, one request per source per day.
 
 ## Rooms and seats
 

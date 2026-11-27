@@ -1,0 +1,17 @@
+{
+  "theme": "Naija everyday",
+  "tiles": [
+    {
+      "prompt": "Things you'd buy at a Lagos street market",
+      "needed": 3,
+      "obvious": ["pepper", "tomato", "yam", "plantain", "fabric", "fish", "onion", "rice"],
+      "sideways": ["generator", "sachet", "charger", "umbrella", "suya"]
+    },
+    {
+      "prompt": "Sounds you hear in Lagos traffic",
+      "needed": 3,
+      "obvious": ["horn", "engine", "shouting", "music", "siren", "whistle", "hawker", "brakes"],
+      "sideways": ["preacher", "generator", "rain", "radio", "laughter"]
+    }
+  ]
+}

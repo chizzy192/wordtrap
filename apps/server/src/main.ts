@@ -26,7 +26,7 @@ import { SolanaTreasury, type TreasuryWallet } from "./treasury.ts";
 import { Withdrawals } from "./withdrawals.ts";
 import { WalletLinks } from "./links.ts";
 import { setMockTreasury } from "./chain/mock.ts";
-import { DeckManager, FirecrawlClient, MemoryDeckStore, SupabaseDeckStore, loadSources, playable, type FirecrawlLike, type DeckStore, type DeckSource } from "./decks.ts";
+import { DeckManager, FirecrawlClient, DatamuseClient, MemoryDeckStore, SupabaseDeckStore, loadSources, loadCurated, playable, type FirecrawlLike, type DatamuseLike, type DeckStore, type DeckSource, type CuratedDeck } from "./decks.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
 import { MemoryProfileStore, validateName, shortAddress, type ProfileStore } from "./profiles.ts";
 import { RoomError } from "./rooms.ts";
@@ -96,6 +96,12 @@ export interface AppOptions {
   deckSources?: DeckSource[];
   deckStore?: DeckStore;
   deckToday?: () => string;
+  /** Datamuse (no key) for letter-play checks and built tiles; `null` skips those tile styles. Default: the public API. */
+  datamuse?: DatamuseLike | null;
+  /** Hand-written decks (default: apps/server/config/decks/*.json). */
+  curatedDecks?: CuratedDeck[];
+  /** Randomness of the run rotation (tests): built-in, curated, today's web deck, equal weight among the kinds available. */
+  deckRandom?: () => number;
   /** ADMIN_TOKEN for POST /api/v1/decks/refresh (default from the environment). */
   adminToken?: string | null;
   /** Clock and randomness for the one-time wallet-check amounts (tests). */
@@ -221,7 +227,8 @@ export function createApp(o: AppOptions = {}): App {
   const nameCache = new Map<string, string>();        // address -> display name, filled as profiles are read or written
   // Daily decks from the web (Firecrawl → validated tiles → Supabase or memory), refreshed lazily when a run starts.
   const firecrawl: FirecrawlLike | null = o.firecrawl === undefined ? (process.env.FIRECRAWL_API_KEY ? new FirecrawlClient(process.env.FIRECRAWL_API_KEY) : null) : o.firecrawl;
-  const decks = new DeckManager({ sources: o.deckSources ?? loadSources(), store: o.deckStore ?? (supa ? new SupabaseDeckStore(supa.db) : new MemoryDeckStore()), firecrawl, log: console.log, today: o.deckToday });
+  const curated = o.curatedDecks ?? loadCurated(fileURLToPath(new URL("../config/decks", import.meta.url)), console.log);
+  const decks = new DeckManager({ sources: o.deckSources ?? loadSources(), store: o.deckStore ?? (supa ? new SupabaseDeckStore(supa.db) : new MemoryDeckStore()), firecrawl, datamuse: o.datamuse === undefined ? new DatamuseClient() : o.datamuse, curated, log: console.log, today: o.deckToday, random: o.deckRandom });
   const adminToken = o.adminToken === undefined ? (process.env.ADMIN_TOKEN || null) : o.adminToken;
   // Runs survive a restart: saved write-behind to Supabase (table runs) when it is configured; memory only otherwise.
   const runStore: RunStore | null = o.runStore === undefined ? (supa ? new SupabaseRunStore(supa.db) : null) : o.runStore;
@@ -244,7 +251,13 @@ export function createApp(o: AppOptions = {}): App {
       for (const [k, n] of x.backCount ?? []) if (!backCount.has(k)) backCount.set(k, Number(n));
       if (x.house && !run.match.finished()) houseResume.push(run);   // the driver continues once the server listens
     },
-    pickDeck: async () => { const d = await decks.pickForRun(); return d ? { tiles: playable(d), meta: { theme: d.theme, sourceUrl: d.sourceUrl, site: d.site, day: d.day } } : null; },
+    // the rotation: built-in (null), a curated deck, or today's web deck (70+); the state shape is the same for all
+    pickDeck: async () => {
+      const p = await decks.pickForRun();
+      if (p.kind === "web") return { tiles: playable(p.deck), meta: { theme: p.deck.theme, sourceUrl: p.deck.sourceUrl, site: p.deck.site, day: p.deck.day } };
+      if (p.kind === "curated") return { tiles: playable({ tiles: p.deck.tiles }), meta: { theme: p.deck.theme, sourceUrl: "", site: "WordTrap", day: o.deckToday?.() ?? new Date().toISOString().slice(0, 10) } };
+      return null;
+    },
     onRun: (run: Run) => {
       // Fiat mines: when the treasury's trap fires, pay the viewer who owns it (idempotent per trap).
       run.chain.onTrapFired((e) => {
@@ -347,7 +360,7 @@ export function createApp(o: AppOptions = {}): App {
         if (!adminToken) return json(res, 403, { error: "ADMIN_TOKEN is not configured on this server." });
         if (String(req.headers["x-admin-token"] ?? "") !== adminToken) return json(res, 401, { error: "Admin token required." });
         const r = await decks.refresh(true);
-        return json(res, 200, { ...r, decks: await decks.status(), today: (await decks.store.forDay(o.deckToday?.() ?? new Date().toISOString().slice(0, 10))).map((d) => ({ theme: d.theme, site: d.site, tiles: d.tiles.length })) });
+        return json(res, 200, { ...r, decks: await decks.status(), today: (await decks.store.forDay(o.deckToday?.() ?? new Date().toISOString().slice(0, 10))).map((d) => ({ theme: d.theme, site: d.site, tiles: d.tiles.length, score: d.score ?? 0 })) });
       }
 
       // ---- lobby ----
