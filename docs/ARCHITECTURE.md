@@ -295,6 +295,18 @@ board framed at 420x320, 640x360 and 960x540, hidden for a while, across a serve
 unknown run, and fails on any console error, thrown error, failed request or 4xx/5xx; it skips when Chrome is absent.
 `scripts/browser-embed-soak.mjs` samples DOM nodes, listeners, heap and script time over ten minutes.
 
+**Light on the GPU.** Byte Arena runs a 3D avatar next to the board, so inside the embed, in the compact layout
+(under 900 px wide or 620 px tall) and under `prefers-reduced-motion` the board takes `body.light`: nothing runs
+continuously (no fuse spark, no low-fuse jitter, no spinning burst lines, no halftone texture, no clip-path or
+colour animations, no layout transitions), no filters, blend modes or `will-change`, box-shadows stay but never
+animate, and event animations (boom, tile clear, shake) run once for under 600 ms with transform and opacity only,
+their classes removed on `animationend`. The embed polls every 1.5 s and renders only when the answer changed.
+Inside the embed every link to the full site (`/play`, `/side/…`, `/stake/…`, sign-in) is a plain absolute
+`<a target="_blank" rel="noopener">` and the board shows "Play at <host>/play" as text, because the Byte Arena
+iframe is sandboxed without pop-ups: nothing navigates the iframe and nothing calls `window.open`.
+`scripts/browser-embed-fps.mjs` measures composited frames per second while idle in a GPU-less headless Chrome
+(27 Nov 2026: 8.8 frames/s before on a live run with Byte not moving, 0.9 on a finished run; 0.0 and 0.1 after).
+
 **Names.** A signed-in player's display name is the one they set once (`PUT /api/v1/profile`), else the Google name
 Pollar's profile carries (adopted on the first verified sign-in, trimmed to the name rule), else the short wallet
 address. Guests are asked once, right after choosing to play as a guest, and may skip. No action (seat, plant, back,

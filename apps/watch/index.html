@@ -503,6 +503,31 @@ body.tight4 .fuselabel { margin-top: 0; font-size: .8em; }
 @media (min-width: 1600px) {
   .grid { grid-template-columns: minmax(0, 1fr) minmax(360px, 560px); }
 }
+/* ---------- light mode: the Byte Arena embed, the compact layout and reduced motion. Nothing runs continuously: no spark,
+   no jitter, no spinning burst lines, no halftone texture, no clip-path or colour animations, no layout transitions.
+   Event animations run once, under 600 ms, with transform and opacity only, and their classes are removed afterwards. ---------- */
+body.light { background-image: none; }
+body.light * { will-change: auto !important; filter: none !important; backdrop-filter: none !important; mix-blend-mode: normal !important; }
+body.light #spark.idle::before, body.light #spark.idle::after, body.light #fuseSec.low, body.light .card.blueflash, body.light .card.hotflash,
+body.light .seg.just, body.light .card.slash::after, body.light #hand .wipe, body.light #ticker div { animation: none; }
+body.light #spark, body.light .card .bar, body.light #tug i, body.light #tug.sweep i, body.light .private button::after { transition: none; }
+body.light #hand .wipe { display: none; }
+body.light .card.slash::after { clip-path: inset(0); }
+body.light #boom.on .flash { animation: lightflash .5s steps(1, end) both; }
+body.light #boom.on .lines { animation: lightburst .4s var(--snap) both; }
+body.light #boom.on .plate { animation: lightslam .5s var(--snap) both; }
+body.light #boom.on .ltr { animation: none; }
+body.light #boom.on .impact { animation: none; opacity: 0; }
+body.light #boom.multi.on .stack { animation: none; }
+body.light .strip.flipin { animation: lightflip .35s var(--snap) both; }
+body.light body.shake .wrap, body.light.shake .wrap { animation: lightshake .3s steps(6); }
+@keyframes lightflash { 0% { opacity: 0; } 10% { opacity: .9; } 85% { opacity: .9; } 100% { opacity: 0; } }
+@keyframes lightburst { from { opacity: 1; transform: scale(.6); } to { opacity: 0; transform: scale(1); } }
+@keyframes lightslam { 0% { opacity: 0; transform: translate(-50%, -50%) rotate(-2deg) scale(1.6); } 30% { opacity: 1; transform: translate(-50%, -50%) rotate(-2deg) scale(1); } 85% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%, -50%) rotate(-2deg) scale(1); } }
+@keyframes lightflip { from { opacity: 0; transform: rotate(-1deg) scale(.96); } to { opacity: 1; transform: rotate(-1deg) scale(1); } }
+@keyframes lightshake { 0% { transform: translate(0); } 40% { transform: translate(6px, -3px); } 80% { transform: translate(-4px, 2px); } 100% { transform: translate(0); } }
+#playAt { display: none; margin: 8px 0 0; color: var(--soft); font-size: .9em; }
+body.embed #playAt { display: block; }
 </style>
 </head>
 <body>
@@ -615,6 +640,7 @@ body.tight4 .fuselabel { margin-top: 0; font-size: .8em; }
       <div id="mines"><div class="empty">No mines armed yet. The crowd is quiet.</div></div>
       <p class="caption">Mines arm next turn. A challenge only disarms what's already live. The crowd can re-mine a word afterwards.</p>
       <a id="stakeLink" class="stakelink" href="/stake/" target="_blank" rel="noreferrer" hidden>Pollar wallet page</a>
+      <p id="playAt">Play at <span id="playAtHost"></span>/play</p>
     </div>
   </aside>
 
@@ -655,10 +681,28 @@ const $ = (id) => document.getElementById(id);
 const fmt = (n) => "$" + Number(n || 0).toFixed(2);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const enc = new TextEncoder();
-const POLL_MS = 1200, MYPOS_MS = 5000;
-let runId = (location.pathname.match(/^\/watch\/([^/]+)/) || [])[1] || null;
 // ---- hardening: this page lives inside the Byte Arena iframe and must never stop rendering or polling ----
 const EMBEDDED = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
+// the light mode: the embed, the compact layout (under 900 px wide or 620 px tall) and reduced motion share one rule set with nothing running continuously
+const COMPACT = matchMedia("(max-width: 899px), (max-height: 619px)");
+const LIGHT = () => EMBEDDED || COMPACT.matches || matchMedia("(prefers-reduced-motion: reduce)").matches;
+const applyLight = () => { document.body.classList.toggle("light", LIGHT()); document.body.classList.toggle("embed", EMBEDDED); };
+applyLight(); COMPACT.addEventListener("change", applyLight); matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change", applyLight);
+const POLL_MS = LIGHT() ? 1500 : 1200, MYPOS_MS = 5000;   // the embed never polls faster than once every 1.5 s
+let runId = (location.pathname.match(/^\/watch\/([^/]+)/) || [])[1] || null;
+// event animations run once: their classes leave when the animation ends, so nothing is left animating or re-triggering
+const TRANSIENT = ["stamp", "flipseat", "flipin", "slam", "bump", "bounce", "pop", "hotflash", "blueflash", "poppy", "fadein", "just", "snap"];
+document.addEventListener("animationend", (e) => {
+  const el = e.target; if (!(el instanceof Element)) return;
+  for (const c of TRANSIENT) el.classList.remove(c);
+  if (el.classList.contains("plate")) { const o = document.getElementById("boom"); o.classList.remove("on", "multi"); }   // the boom overlay is done once the plate has dropped
+  if (el.classList.contains("wrap")) document.body.classList.remove("shake");
+});
+// inside the embed every link to the full site opens a new tab (never the iframe), and the address is shown as text in case pop-ups are blocked
+if (EMBEDDED) {
+  document.getElementById("playAtHost").textContent = location.host;
+  for (const a of document.querySelectorAll('a[href^="/"]')) { a.href = new URL(a.getAttribute("href"), location.origin).href; a.target = "_blank"; a.rel = "noopener"; }
+}
 const problems = [];   // the last few things that went wrong, kept for the console; nothing here changes what the viewer sees
 function noteProblem(kind, err) {
   problems.push({ kind, at: Date.now(), message: String(err && err.message ? err.message : err) }); if (problems.length > 20) problems.shift();
@@ -817,8 +861,9 @@ function render() {
   } else $("upNextRight").hidden = true;
   const who = s.callsign || "Byte";
   $("meta").textContent = s.status === "live" ? `${who} is playing, turn ${s.turn}` : `${who} finished on turn ${s.turn}`;
-  $("stakeLink").href = `/stake/?run=${encodeURIComponent(s.matchId)}`;
-  $("backLink").href = $("trapLink").href = `/side/${encodeURIComponent(s.matchId)}`;
+  const site = (path) => (EMBEDDED ? new URL(path, location.origin).href : path);
+  $("stakeLink").href = site(`/stake/?run=${encodeURIComponent(s.matchId)}`);
+  $("backLink").href = $("trapLink").href = site(`/side/${encodeURIComponent(s.matchId)}`);
   $("live").className = s.status === "live" ? "" : "off";
   $("liveLabel").textContent = s.status === "live" ? "Live" : "Over";
   const pct = Math.max(0, s.fuse / s.fuseTotal) * 100;
@@ -1083,8 +1128,10 @@ async function poll() {
     lastSeq = num(seq, lastSeq); batchState = s;
     queue.push(...events.filter((e) => e && typeof e === "object" && typeof e.type === "string"));
     if (queue.length > QUEUE_MAX) queue.splice(0, queue.length - QUEUE_MAX);   // far behind: skip ahead rather than grow without bound
-    if (!playing && !queue.length) guard("render", () => { snapshotHand(); state = s; render(); });   // nothing new: keep the clock/fuse honest
-    else playNext();
+    if (!playing && !queue.length) {
+      const sig = JSON.stringify([s, room, names]);   // nothing new: render only when something actually changed
+      if (sig !== lastSig) { lastSig = sig; guard("render", () => { snapshotHand(); state = s; render(); }); }
+    } else playNext();
   } catch (e) { failedPoll(); }
   finally { polling = false; }
 }
@@ -1095,7 +1142,7 @@ function failedPoll(text) {
   if (failures >= 3) { $("meta").textContent = "Reconnecting…"; nextTryAt = Date.now() + Math.min(30_000, 2000 * 2 ** Math.min(4, failures - 3)); }
 }
 const QUEUE_MAX = 40;
-let polling = false, failures = 0, nextTryAt = 0;
+let polling = false, failures = 0, nextTryAt = 0, lastSig = "";
 poll();
 setInterval(poll, POLL_MS);
 // which side the signed-in viewer is on (backer stake, seat): optional, every 5 s, never in the embed, never with no identity; a failure is "no position"
@@ -1237,7 +1284,7 @@ function openFunds() {
   $("fpBalance").textContent = fmt((balanceMicro ?? 0) / 1e6);
   $("fpKind").textContent = treasury?.mode === "pollar" ? "Pollar wallet" : "Test funds";
   $("fundsBody").innerHTML = treasury?.mode === "pollar"
-    ? `<a class="btn blue wide" href="/stake/?run=${encodeURIComponent(runId ?? "")}">Top up with Pollar</a>`
+    ? `<a class="btn blue wide" href="${EMBEDDED ? location.origin : ""}/stake/?run=${encodeURIComponent(runId ?? "")}"${EMBEDDED ? ' target="_blank" rel="noopener"' : ""}>Top up with Pollar</a>${EMBEDDED ? `<div class="help">Or go to ${esc(location.host)}/stake/</div>` : ""}`
     : `<button type="button" class="btn yellow wide" id="addTestFunds">Add test funds</button><div class="help">Adds $10 of play money to your balance.</div>`;
   $("fundsMsg").textContent = "";
   $("fundsPanel").hidden = false;
@@ -1245,7 +1292,7 @@ function openFunds() {
 }
 function renderAccount() {
   const a = $("account");
-  if (!identity.id) { a.innerHTML = `<button type="button" class="btn small" id="signInBtn">Sign in</button>`; return; }
+  if (!identity.id) { a.innerHTML = EMBEDDED ? `<a class="btn small" href="${location.origin}/stake/?return=${encodeURIComponent(location.pathname + location.search)}" target="_blank" rel="noopener">Sign in</a>` : `<button type="button" class="btn small" id="signInBtn">Sign in</button>`; return; }
   const kind = treasury?.mode === "pollar" && identity.mode === "wallet" ? "Pollar wallet" : "Test funds";
   a.innerHTML = `<span class="who" title="${esc(identity.id)}">${esc(identity.label(identity.id, players))}</span>`
     + `<span class="bal">${fmt((balanceMicro ?? 0) / 1e6)}<small>${kind}</small></span>`
@@ -1273,7 +1320,7 @@ document.addEventListener("click", async (e) => {
   }
   if (t.id === "googleBtn") {
     // Pollar sign-in lives in the wallet page (it needs the SDK); it returns here afterwards
-    if (treasury?.mode === "pollar") { const url = `/stake/?return=${encodeURIComponent(location.pathname + location.search)}`; if (EMBEDDED) window.open(url, "_blank", "noopener"); else location.href = url; }
+    if (treasury?.mode === "pollar") { const url = `/stake/?return=${encodeURIComponent(location.pathname + location.search)}`; if (EMBEDDED) $("googleHelp").textContent = `Sign in at ${location.host}/stake/`; else location.href = url; }
     else $("googleHelp").textContent = "Google sign-in isn't set up on this server yet. Play as a guest for now.";
   }
   if (t.id === "nameLater") { closePopovers(); resumePending(); }

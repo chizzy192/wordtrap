@@ -51,6 +51,13 @@ test("embed: an anonymous viewer watches a whole run in the Byte Arena iframe si
     const framesUp = await page.eval(`[...document.querySelectorAll("iframe")].map((f) => f.contentDocument?.querySelector("#hand")?.children.length ?? -1)`);
     assert.ok(framesUp.every((n: number) => n > 0), `every frame renders a hand (${framesUp})`);
     assert.deepEqual(await page.eval(`[...document.querySelectorAll("iframe")].map((f) => [f.contentDocument.getElementById("firstVisit").hidden, f.contentDocument.getElementById("namePrompt").hidden])`), SIZES.map(() => [true, true]), "no panel asks an embedded viewer for anything");
+    // light on the GPU inside the embed: the light class, nothing animating while idle, the flat background
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll("iframe")].map((f) => f.contentDocument.body.classList.contains("light") && f.contentDocument.body.classList.contains("embed"))`), SIZES.map(() => true), "body.light and body.embed in every frame");
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll("iframe")].map((f) => getComputedStyle(f.contentDocument.body).backgroundImage)`), SIZES.map(() => "none"), "no halftone texture in the embed");
+    // every link to the full site opens a new tab with an absolute address; the address is shown as text; nothing calls window.open
+    const links = await page.eval(`[...document.getElementById("f640").contentDocument.querySelectorAll('a[href*="/play"], a[href*="/side/"], a[href*="/stake/"]')].map((a) => [a.getAttribute("href"), a.target, a.rel])`);
+    assert.ok(links.length >= 4 && links.every(([h, t, r]: string[]) => /^http:\/\/127\.0\.0\.1:\d+\//.test(h) && t === "_blank" && r === "noopener"), `site links are absolute, target _blank, rel noopener (${JSON.stringify(links)})`);
+    assert.equal(await page.eval(`document.getElementById("f640").contentDocument.getElementById("playAt").textContent`), `Play at 127.0.0.1:${port}/play`, "the address as text");
 
     // ---- hidden tab: polling goes on ----
     await page.send("Page.setWebLifecycleState", { state: "hidden" });
@@ -69,6 +76,8 @@ test("embed: an anonymous viewer watches a whole run in the Byte Arena iframe si
     let shown: any = null;
     for (let i = 0; i < 300; i++) { shown = await page.eval(`[...document.querySelectorAll("iframe")].map((f) => f.contentDocument?.getElementById("end")?.className ?? "")`); if (shown.some((c: string) => c.includes("show"))) break; await sleep(1000); }
     assert.ok(shown.some((c: string) => c.includes("show")), `a frame shows the end (${shown})`);
+    await sleep(3000);
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll("iframe")].map((f) => f.contentDocument.getAnimations().filter((a) => a.playState === "running").length)`), SIZES.map(() => 0), "nothing animates once the run is over and the feed is replayed");
     const fused = await page.eval(`[...document.querySelectorAll("iframe")].map((f) => f.contentDocument?.getElementById("fuseSec")?.textContent)`);
     assert.ok(fused.every((f: string) => /^\d+$/.test(f)), `every frame shows the fuse (${fused})`);
     assert.deepEqual(problems.list, [], `zero console errors, exceptions, failed requests or 4xx/5xx for the whole run:\n${problems.list.map((p) => `${p.kind}: ${p.text}`).join("\n")}`);
@@ -125,7 +134,7 @@ test("embed: the live 401 case: a viewer whose wallet identity has no session to
     assert.equal(mypos, 0, "my-position is never asked from the embed");
     assert.ok(spectates >= 3, `the board polls (${spectates})`);
     assert.deepEqual(problems.list, [], `no 4xx, no errors, framed:\n${problems.list.map((p) => `${p.kind}: ${p.text}`).join("\n")}`);
-    assert.ok(await page.eval(`!!document.getElementById("f640").contentDocument.getElementById("signInBtn")`), "the stale identity reads as signed out");
+    assert.ok(await page.eval(`[...document.getElementById("f640").contentDocument.querySelectorAll("#account a, #account button")].some((e) => e.textContent === "Sign in")`), "the stale identity reads as signed out");
     // the same viewer at the top level (not framed): still no 4xx; the stale identity is forgotten, so nothing asks for a profile or a balance
     problems.clear(); mypos = 0;
     await page.send("Page.addScriptToEvaluateOnNewDocument", { source: stale });
@@ -152,6 +161,10 @@ test("embed: the board answers with text/html and the frame-ancestors policy; no
   const script = html.slice(html.indexOf("<script type=\"module\">"));
   assert.ok(!/\btop\.location|window\.top\.(location|postMessage)|parent\.location/.test(script), "never navigates the top window");
   assert.ok(!/\balert\(|\bconfirm\(|\bprompt\(/.test(script), "no alert, confirm or prompt");
+  assert.ok(!/window\.open\(/.test(script), "nothing calls window.open");
+  const css = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+  for (const bad of ["backdrop-filter:", "mix-blend-mode:", "will-change:"]) assert.ok(!css.includes(bad) || css.includes(`body.light * { will-change: auto`), `no ${bad} in the board CSS`);
+  assert.ok(/body\.light #spark\.idle::before, body\.light #spark\.idle::after, body\.light #fuseSec\.low/.test(css), "the continuous animations are off in light mode");
   assert.ok(/window\.addEventListener\("error"/.test(script) && /unhandledrejection/.test(script), "one global handler for errors and rejections");
   assert.ok(/Reconnecting…/.test(script) && /QUEUE_MAX/.test(script) && /EMBEDDED/.test(script), "backoff, a bounded queue, embed awareness");
 });
