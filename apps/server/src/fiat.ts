@@ -394,8 +394,10 @@ export const USDC_MINTS = { mainnet: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt
 export const pollarCluster = (network: string): "mainnet" | "devnet" | null => (network === "mainnet" ? "mainnet" : network === "testnet" ? "devnet" : null);
 
 export interface UsdcConfig {
-  /** Treasury wallet address (base58). Its USDC token account is the destination. */
+  /** Treasury wallet address (base58). Its USDC token account is the destination for new payments. */
   treasury: string;
+  /** Earlier treasury addresses (LEGACY_TREASURY_ADDRESSES): deposits to them still count; never a destination. */
+  legacy?: string[];
   /** USDC mint on the cluster RPC_URL points at. */
   mint: string;
 }
@@ -421,7 +423,8 @@ export async function confirmUsdcPayment(ledger: FiatLedger, rpc: SolanaRpc, cfg
   if (!tx) { ledger.markPending(signature, user, amountMicro ?? 0); return { status: "pending" as const, credited: false, duplicate: false, micro: amountMicro ?? 0 }; }
   if (tx.meta?.err) { ledger.markFailed(signature); throw new FiatError("That transaction failed on Solana. Nothing was credited.", 402); }
   const deltas = tokenDeltas(tx, cfg.mint);
-  const received = deltas.filter((d) => d.owner === cfg.treasury).reduce((n, d) => n + d.delta, 0n);
+  const treasuries = new Set([cfg.treasury, ...(cfg.legacy ?? [])]);
+  const received = deltas.filter((d) => treasuries.has(d.owner)).reduce((n, d) => n + d.delta, 0n);
   const sent = deltas.filter((d) => d.owner === user).reduce((n, d) => n - d.delta, 0n);
   if (received <= 0n) { ledger.markFailed(signature); throw new FiatError("That transaction did not pay USDC to the game treasury.", 402); }
   if (sent <= 0n) { ledger.markFailed(signature); throw new FiatError("That payment was not sent from your Pollar wallet.", 403); }
@@ -469,7 +472,8 @@ export async function reconcileDeposits(ledger: FiatLedger, rpc: SolanaRpc, cfg:
   const credited: { signature: string; micro: number }[] = [];
   if (!session.wallet) return credited;
   const store = o.store ?? ledgerStore(ledger);
-  const accounts = await rpc.getTokenAccountsByOwner(cfg.treasury, cfg.mint);
+  const accounts: string[] = [];
+  for (const owner of new Set([cfg.treasury, ...(cfg.legacy ?? [])])) accounts.push(...(await rpc.getTokenAccountsByOwner(owner, cfg.mint)));
   for (const account of accounts) {
     for (const { signature, err } of await rpc.getSignaturesForAddress(account, o.limit ?? 100)) {
       if (err) continue;

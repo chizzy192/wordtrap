@@ -2,8 +2,9 @@
 // an interface so tests use a fake; the real one signs with TREASURY_KEYPAIR (a Solana CLI JSON secret key, as a file
 // path or inline) over RPC_URL using @solana/web3.js and @solana/spl-token. Nothing here reads a balance or decides
 // money: the server debits first (apply_delta) and only then asks this to send.
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { base58decode } from "./fiat.ts";
 
 export type SendOutcome =
   | { status: "sent"; signature: string; lastValidBlockHeight: number }      // broadcast; wait for finality separately
@@ -36,14 +37,19 @@ export class SolanaTreasury implements TreasuryWallet {
     this.mint = new web3.PublicKey(mint);
     this.address = this.kp.publicKey.toBase58();
   }
-  /** TREASURY_KEYPAIR: a path to the JSON secret-key array, or the array itself. The key never leaves this object. */
-  static fromEnv(env: NodeJS.ProcessEnv, mint: string): SolanaTreasury | null {
+  /**
+   * TREASURY_KEYPAIR: an inline JSON array of 64 numbers, a path to a file holding one, or a base58 secret key.
+   * Anything else is reported in one line (never the value) and withdrawals stay off; startup never fails on it.
+   */
+  static fromEnv(env: NodeJS.ProcessEnv, mint: string, log: (line: string) => void = (l) => console.warn(l)): SolanaTreasury | null {
     const raw = env.TREASURY_KEYPAIR;
-    if (!raw) return null;
-    const text = raw.trim().startsWith("[") ? raw : readFileSync(raw.trim(), "utf8");
-    const secret = Uint8Array.from(JSON.parse(text));
-    const req = createRequire(import.meta.url);
-    return new SolanaTreasury(req("@solana/web3.js"), req("@solana/spl-token"), env.RPC_URL ?? "https://api.devnet.solana.com", secret, mint);
+    if (!raw || !raw.trim()) return null;
+    const parsed = parseSecretKey(raw);
+    if ("error" in parsed) { log(`TREASURY_KEYPAIR is not a secret key (it looks like ${parsed.error}). Withdrawals are off.`); return null; }
+    try {
+      const req = createRequire(import.meta.url);
+      return new SolanaTreasury(req("@solana/web3.js"), req("@solana/spl-token"), env.RPC_URL ?? "https://api.devnet.solana.com", parsed.secret, mint);
+    } catch (e) { log(`TREASURY_KEYPAIR could not be loaded (${(e as Error).message.split("\n")[0].slice(0, 80)}). Withdrawals are off.`); return null; }
   }
   publicKeyBytes(): Uint8Array { return new Uint8Array(this.kp.publicKey.toBytes()); }
   async holdings() {
@@ -88,6 +94,28 @@ export class SolanaTreasury implements TreasuryWallet {
     const height = await this.conn.getBlockHeight("finalized");
     return height > lastValidBlockHeight ? "expired" : "unknown";
   }
+}
+
+/** What a TREASURY_KEYPAIR value is: a 64-byte secret, or a short description of why it is not one. */
+export function parseSecretKey(raw: string): { secret: Uint8Array } | { error: string } {
+  const text = raw.trim();
+  const fromArray = (t: string): { secret: Uint8Array } | { error: string } => {
+    let arr: unknown;
+    try { arr = JSON.parse(t); } catch { return { error: "neither a JSON array nor base58" }; }
+    if (!Array.isArray(arr) || arr.length !== 64 || !arr.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) return { error: "a JSON array that is not 64 bytes" };
+    return { secret: Uint8Array.from(arr as number[]) };
+  };
+  if (text.startsWith("[")) return fromArray(text);
+  const b58 = base58decode(text);
+  if (b58) {
+    if (b58.length === 64) return { secret: b58 };
+    if (b58.length === 32) return { error: "a public address" };
+  }
+  if (/[\\/.]/.test(text) || /^[A-Za-z]:/.test(text)) {
+    if (!existsSync(text)) return { error: "a missing file" };
+    try { return fromArray(readFileSync(text, "utf8")); } catch { return { error: "an unreadable file" }; }
+  }
+  return { error: "neither a JSON array, a base58 secret key nor a file path" };
 }
 
 function base58(bytes: Uint8Array): string {

@@ -370,9 +370,13 @@ export function App({ mode }: { mode: Mode }) {
         setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` });
         await refreshBalance(); return;
       }
-      if (!treasury?.address || !treasury.usdcMint) throw new Error("The server has no treasury address or USDC mint for this network yet.");
+      // the destination is read from the server right now, never from an earlier load
+      const fresh: Treasury & { withdrawals?: string } = await fetch(SERVER + "/api/v1/treasury", { cache: "no-store" }).then((r) => r.json());
+      setTreasury(fresh);
+      if (fresh.mode === "pollar" && fresh.withdrawals !== "ready") throw new Error("This server has no treasury wallet set up yet, so adding funds is paused. Nothing was sent.");
+      if (!fresh.address || !fresh.usdcMint) throw new Error("The server has no treasury address or USDC mint for this network yet.");
       // sendPayment takes integer base units for Solana (the mint's smallest unit): $5.00 of USDC is "5000000"
-      const out = await id.sendUsdc(treasury.address, micro, treasury.usdcMint);
+      const out = await id.sendUsdc(fresh.address, micro, fresh.usdcMint);
       if (out.status === "error") throw new Error(friendly((out as any).details ?? (out as any).message, "The payment was not sent."));
       if (out.status === "cosign_pending") throw new Error("The payment is waiting for another device's approval.");
       // the signature is kept until the server says credited (retried on load and every 30 s), then asked for now

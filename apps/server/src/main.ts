@@ -76,6 +76,8 @@ export interface AppOptions {
   treasury?: TreasuryWallet | null;
   /** How long a withdrawal waits for finality before answering "pending" (tests shorten it). */
   withdrawWaitMs?: number;
+  /** Earlier treasury addresses whose deposits still count (default LEGACY_TREASURY_ADDRESSES). */
+  legacyTreasuries?: string[];
   /** Let the funds page bind the wallet address the SDK shows when Pollar's server side gives none (env
    *  ALLOW_CLIENT_WALLET_BINDING=1). Off by default: a client could bind another player's address first. */
   allowClientWalletBinding?: boolean;
@@ -158,7 +160,10 @@ export function createApp(o: AppOptions = {}): App {
   }
   // Cash-out: the treasury that signs USDC transfers to players. With a real keypair, the mock chain reports its public
   // key as the treasury, so deposits, commitments and withdrawals all use one address.
-  const treasuryWallet: TreasuryWallet | null = o.treasury === undefined ? SolanaTreasury.fromEnv(process.env, o.usdcMint ?? process.env.USDC_MINT ?? USDC_MINTS.devnet) : o.treasury;
+  // A bad TREASURY_KEYPAIR never stops the server: it is reported once and withdrawals stay off.
+  let treasuryWallet: TreasuryWallet | null = null;
+  if (o.treasury !== undefined) treasuryWallet = o.treasury;
+  else { try { treasuryWallet = SolanaTreasury.fromEnv(process.env, o.usdcMint ?? process.env.USDC_MINT ?? USDC_MINTS.devnet, console.warn); } catch (e) { console.warn(`TREASURY_KEYPAIR could not be loaded (${(e as Error).message.split("\n")[0].slice(0, 80)}). Withdrawals are off.`); treasuryWallet = null; } }
   if (treasuryWallet instanceof SolanaTreasury && chainKind === "mock") setMockTreasury(treasuryWallet.publicKeyBytes());
   const withdrawals = new Withdrawals({ storeFor, stores: () => (supa ? [supa, memStore] : [memStore]), treasury: () => treasuryWallet, log: console.log, waitMs: o.withdrawWaitMs, pollMs: o.withdrawWaitMs ? Math.min(200, o.withdrawWaitMs) : undefined });
   const planted = new Map<string, any>();                       // plant ref → trap, so a retried plant is not charged or planted twice
@@ -171,6 +176,9 @@ export function createApp(o: AppOptions = {}): App {
   const cluster = async () => (clusterCache ??= GENESIS[await rpc.getGenesisHash()] ?? "unknown");
   const usdcMint = async () => o.usdcMint ?? process.env.USDC_MINT ?? ((await cluster()) === "mainnet" ? USDC_MINTS.mainnet : USDC_MINTS.devnet);
   const treasuryAddress = async () => base58((runs.current()?.chain ?? (await makeChain())).treasury().pubkey);
+  /** Earlier treasury addresses whose deposits still count (LEGACY_TREASURY_ADDRESSES); never a destination for new payments. */
+  const legacyTreasuries = (o.legacyTreasuries ?? (process.env.LEGACY_TREASURY_ADDRESSES ?? "").split(",")).map((a) => a.trim()).filter(isSolanaAddress);
+  const usdcCfg = async () => ({ treasury: await treasuryAddress(), mint: await usdcMint(), legacy: legacyTreasuries });
 
   const crowdOn = !!(o.sim || o.crowd);
   // "Start a room" from the lobby: a run played by the house Byte (the local driver over this same API). Capped.
@@ -205,7 +213,7 @@ export function createApp(o: AppOptions = {}): App {
   const retry = setInterval(async () => {
     for (const { id, user, micro } of ledger.pendingPayments()) {
       try {
-        if (pollar.kind === "pollar") await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, id, { userId: "", wallet: user, network: "", expiresAt: 0 }, micro, storeFor(user));
+        if (pollar.kind === "pollar") await confirmUsdcPayment(ledger, rpc, await usdcCfg(), id, { userId: "", wallet: user, network: "", expiresAt: 0 }, micro, storeFor(user));
         else await confirmPayment(ledger, pollar as MockPollar, id, user);
       } catch (e) { console.warn(`[fiat] pending payment ${id} still unconfirmed:`, (e as Error).message); }   // stays pending (or was marked failed), never credited
     }
@@ -224,7 +232,7 @@ export function createApp(o: AppOptions = {}): App {
    *  Pollar once, then served from the cache), and when a wallet is bound. */
   function reconcileSoon(session: PollarSession) {
     if (pollar.kind !== "pollar" || !session.wallet) return;
-    (async () => { try { await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, session, { log: console.log, store: storeFor(session.wallet!) }); } catch (e) { console.warn("[fiat] reconciliation failed:", (e as Error).message); } })();
+    (async () => { try { await reconcileDeposits(ledger, rpc, await usdcCfg(), session, { log: console.log, store: storeFor(session.wallet!) }); } catch (e) { console.warn("[fiat] reconciliation failed:", (e as Error).message); } })();
   }
   /** The verified session with its Solana wallet: from Pollar's verify content, else Pollar's users lookup (inside
    *  verifySession), else the address this user bound through POST /api/v1/fiat/wallet. */
@@ -375,7 +383,7 @@ export function createApp(o: AppOptions = {}): App {
         // where to pay: the treasury's address and the USDC mint on the cluster this server confirms payments on
         let net = "unknown", mint: string | null = null;
         try { net = await cluster(); mint = await usdcMint(); } catch { /* RPC down: the page says so and retries */ }
-        return json(res, 200, { ...base, network: net, usdcMint: mint });
+        return json(res, 200, { ...base, network: net, usdcMint: mint, withdrawals: treasuryWallet ? "ready" : "not configured" });
       }
       if (p === "/api/v1/fiat/balance" && req.method === "GET") {
         const user = await identify(req, Object.fromEntries(url.searchParams));
@@ -413,7 +421,7 @@ export function createApp(o: AppOptions = {}): App {
         if (pollar.kind !== "pollar") return json(res, 404, { error: "Nothing to reconcile in demo mode." });
         const who = await whoIs(req, {});
         if (!who.session) throw new FiatError("Sign in with Google first.", 401);
-        const credited = await reconcileDeposits(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, who.session, { log: console.log, store: storeFor(who.id) });
+        const credited = await reconcileDeposits(ledger, rpc, await usdcCfg(), who.session, { log: console.log, store: storeFor(who.id) });
         return json(res, 200, { credited, ...(await bal(who.id)) });
       }
       if (p === "/api/v1/fiat/confirm" && req.method === "POST") {
@@ -424,7 +432,7 @@ export function createApp(o: AppOptions = {}): App {
           if (!who.session) throw new FiatError("Sign in with Google to add funds.", 401);
           const signature = String(b.signature ?? b.paymentId ?? "").trim();
           if (!signature) throw new FiatError("signature required", 400);
-          const r = await confirmUsdcPayment(ledger, rpc, { treasury: await treasuryAddress(), mint: await usdcMint() }, signature, who.session, toMicro(b.amount ?? 0), storeFor(who.id));
+          const r = await confirmUsdcPayment(ledger, rpc, await usdcCfg(), signature, who.session, toMicro(b.amount ?? 0), storeFor(who.id));
           return json(res, r.status === "pending" ? 202 : 200, { signature, paymentId: signature, ...r, ...(await bal(who.id)) });
         }
         const paymentId = String(b.paymentId ?? "").trim();

@@ -11,7 +11,7 @@ const hdr = (user: string) => ({ "content-type": "application/json", "x-user": u
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
 test("POST /api/v1/rooms: the house Byte plays, the starter hosts seat 1, the room is listed; three at most; identity required", async () => {
-  const app = createApp({ sim: false, crowd: true, makeChain: async () => { const c = new MockChain(); await c.backByte("alice", 10); return c; }, ledgerPath: null, cfg: { tiles: 3 }, houseDelayMs: 150 });
+  const app = createApp({ sim: false, crowd: true, makeChain: async () => { const c = new MockChain(); await c.backByte("alice", 10); return c; }, ledgerPath: null, cfg: { tiles: 3 }, houseDelayMs: 1000 });   // slow enough that no three-tile house room finishes during the test
   const port = await app.listen(0);
   const base = `http://127.0.0.1:${port}`;
   try {
@@ -25,9 +25,9 @@ test("POST /api/v1/rooms: the house Byte plays, the starter hosts seat 1, the ro
     const mine = list.find((x: any) => x.runId === j.runId);
     assert.ok(mine, "listed"); assert.equal(mine.byte, "House Byte"); assert.equal(mine.people, 1);
     // the house Byte is playing: the turn advances by itself
-    const turn0 = (await fetch(`${base}/runs/${j.runId}/spectate?delay=0`).then((x) => x.json())).state.turn;
-    await new Promise((res) => setTimeout(res, 1200));
-    const turn1 = (await fetch(`${base}/runs/${j.runId}/spectate?delay=0`).then((x) => x.json())).state.turn;
+    const turnOf = async () => (await fetch(`${base}/runs/${j.runId}/spectate?delay=0`).then((x) => x.json())).state.turn;
+    const turn0 = await turnOf(); let turn1 = turn0;
+    for (let i = 0; i < 30 && turn1 <= turn0; i++) { await new Promise((res) => setTimeout(res, 100)); turn1 = await turnOf(); }
     assert.ok(turn1 > turn0, `house Byte moved (${turn0} → ${turn1})`);
     // a run started by an agent with nobody seated is an all-bot room and is listed too
     await fetch(`${base}/api/v1/runs`, { method: "POST", body: JSON.stringify({ callsign: "Oly" }) });
