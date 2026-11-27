@@ -259,6 +259,7 @@ export function App({ mode }: { mode: Mode }) {
   const [, forceRender] = useState(0);
   const pollRef = useRef<number>(0);
   const [pending, setPending] = useState<{ signature: string; amount: number }[]>([]);
+  const [cashout, setCashout] = useState<{ open: boolean; amount: string; step: "idle" | "sending" | "sent" | "pending" | "refunded" | "refused"; text: string }>({ open: false, amount: "", step: "idle", text: "" });
   const [checking, setChecking] = useState<{ busy: boolean; text: string }>({ busy: false, text: "" });
 
   const api = useCallback(async (path: string, body?: unknown) => {
@@ -342,6 +343,22 @@ export function App({ mode }: { mode: Mode }) {
 
   async function copyAddress() { if (await copyText(address)) { setCopied(true); setTimeout(() => setCopied(false), 2000); } }
 
+  /** Cash-out: game balance back to the player's own Pollar wallet. The requestId is kept until the server settles it,
+   *  so a retry after a dropped connection asks about the same withdrawal instead of starting another. */
+  const cashKey = () => `wt.cashout.${id.user}`;
+  async function withdraw() {
+    const amt = cashout.amount.trim();
+    let requestId: string; try { requestId = localStorage.getItem(cashKey()) ?? ""; } catch { requestId = ""; }
+    if (!requestId) { requestId = "wd-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); try { localStorage.setItem(cashKey(), requestId); } catch { /* private */ } }
+    setCashout((c) => ({ ...c, step: "sending", text: "Sending USDC to your wallet…" }));
+    try {
+      const r = await api("/api/v1/fiat/withdraw", { amount: amt, requestId });
+      if (r.status === "sent") { try { localStorage.removeItem(cashKey()); } catch { /* private */ } setCashout({ open: false, amount: "", step: "sent", text: `Sent ${usd(r.micro / 1e6)} USDC to your Pollar wallet.` }); }
+      else if (r.status === "refunded") { try { localStorage.removeItem(cashKey()); } catch { /* private */ } setCashout((c) => ({ ...c, step: "refunded", text: "The transfer did not go through. Your balance was restored." })); }
+      else setCashout((c) => ({ ...c, step: "pending", text: "Your withdrawal is on its way. It settles within a few minutes." }));
+      refreshBalance();
+    } catch (e: any) { setCashout((c) => ({ ...c, step: "refused", text: friendly(e.message) })); }
+  }
   /** Add funds: USDC from the Pollar wallet to the treasury (sendPayment), then the server confirms it on Solana. */
   async function addFunds() {
     if (!canAdd) return;
@@ -447,9 +464,20 @@ export function App({ mode }: { mode: Mode }) {
           {mode === "pollar" && amt > 0 && !walletEmpty && <p className="units">You're adding {usd(amt)} (Pollar shows this as {unitsOf(amt)} units of USDC)</p>}
           <div className="actions">
             <button type="button" className="btn red" disabled={!canAdd || confirming} aria-busy={confirming} onClick={addFunds}>{`Add ${money(amt > 0 ? amt : 0)} to game`}</button>
-            {mode === "pollar" && <button type="button" className="btn outline" onClick={id.openSend}>Withdraw</button>}
+            {mode === "pollar" && <button type="button" className="btn outline" disabled={gameUsd < 1 || cashout.step === "sending"} onClick={() => setCashout((c) => ({ ...c, open: !c.open, amount: c.amount || Math.min(gameUsd, 5).toFixed(2), text: "" }))}>Withdraw</button>}
             {mode === "pollar" && <button type="button" className="btn outline" disabled={checking.busy} onClick={() => reconcile(true)}>Check for missing payments</button>}
           </div>
+          {cashout.open && (
+            <div className="cashout" role="group" aria-label="Withdraw to your Pollar wallet">
+              <label>Withdraw <input className="custom" inputMode="decimal" aria-label="Amount in dollars" value={cashout.amount} onChange={(e) => setCashout((c) => ({ ...c, amount: e.target.value.replace(/[^0-9.]/g, "") }))} /> to your Pollar wallet</label>
+              <button type="button" className="btn blue" disabled={cashout.step === "sending" || !(Number(cashout.amount) >= 1) || Number(cashout.amount) > gameUsd} onClick={withdraw}>{`Withdraw ${money(Number(cashout.amount) || 0)}`}</button>
+              <span className="foot">Minimum $1.00, up to {usd(gameUsd)}. USDC lands in the wallet you signed in with.</span>
+            </div>
+          )}
+          {cashout.step === "sending" && <div className="status" role="status" aria-live="polite">{cashout.text}<div className="progress" aria-hidden="true"></div></div>}
+          {cashout.step === "pending" && <p className="status" role="status">{cashout.text}</p>}
+          {cashout.step === "sent" && <p className="status ok" role="status">{cashout.text}</p>}
+          {(cashout.step === "refunded" || cashout.step === "refused") && <p className="status err" role="alert">{cashout.text}</p>}
           {confirming && <div className="status" role="status" aria-live="polite">Confirming your payment…<div className="progress" aria-hidden="true"></div></div>}
           {checking.text && <p className="status" role="status">{checking.text}</p>}
           {funding.step === "done" && !confirming && <p className="status ok" role="status" aria-live="polite">{funding.text}</p>}

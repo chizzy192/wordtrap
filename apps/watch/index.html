@@ -235,6 +235,13 @@ header { display: flex; align-items: center; gap: calc(var(--gap) * .6); padding
 .money { background: var(--sheet); border: var(--lw) solid var(--line); box-shadow: calc(var(--sh) + 4px) calc(var(--sh) + 4px) 0 var(--hard); padding: var(--pad); }
 .money h2:first-child { margin-top: 0; }
 #tug { position: relative; height: clamp(26px, 2.2vw, 40px); border: var(--lw) solid var(--line); background: repeating-linear-gradient(-45deg, var(--yellow) 0 14px, var(--ink) 14px 28px); overflow: hidden; }
+.poolrows { margin:10px 0 0; padding:0; display:grid; gap:4px; }
+.poolrows > div { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+.poolrows dt { color:var(--soft); }
+.poolrows dd { margin:0; font:800 1.15em/1.2 var(--cond); font-variant-numeric:tabular-nums; }
+.poolrows .total { border-top:2px solid var(--line); padding-top:6px; margin-top:2px; }
+.poolrows .total dt { color:var(--text); font-weight:600; }
+.poolrows .total dd { color:var(--blue-text); font-size:1.45em; }
 #tug i { position: absolute; left: 0; top: 0; bottom: 0; width: 50%; background: var(--blue); border-right: var(--lw) solid var(--ink); transition: width .3s ease-out; }
 .figs { display: grid; grid-template-columns: 1fr 1fr; margin-top: calc(var(--gap) * .5); }
 .figs .k { color: var(--soft); } .figs .r { text-align: right; }
@@ -584,6 +591,13 @@ body.tight4 .fuselabel { margin-top: 0; font-size: .8em; }
         <div><div class="k">Backing Byte</div><div class="v" id="pool">$0.00</div></div>
         <div class="r"><div class="k">Armed on mines</div><div class="v" id="staked">$0.00</div></div>
       </div>
+      <dl class="poolrows" id="poolRows" aria-label="The backers' pool">
+        <div><dt>Backers put in</dt><dd id="poolIn">$0.00</dd></div>
+        <div><dt>Bonuses paid</dt><dd id="poolBonus">−$0.00</dd></div>
+        <div><dt>Quiet mines</dt><dd id="poolQuiet">+$0.00</dd></div>
+        <div class="total"><dt>In the pool now</dt><dd id="poolNow">$0.00</dd></div>
+      </dl>
+      <p class="caption" id="poolNote">Quiet mines join the pool when the run ends.</p>
       <div class="stats"><span>Mines fired <b id="firedN">0</b></span><span>Hints bought <b id="hints">0</b></span><span>Score <b id="score">0</b></span></div>
 
       <h2>Mines on the board</h2>
@@ -788,6 +802,12 @@ function render() {
 
   setFigure("pool", s.backerTotal, fmt);
   setFigure("staked", s.trapTotal, fmt);
+  // the pool as it moves: what backers put in, minus the bonuses paid to setters, plus quiet mines (which join at the end)
+  $("poolIn").textContent = fmt(s.backerTotal);
+  $("poolBonus").textContent = "−" + fmt(s.bonusesPaid ?? 0);
+  $("poolQuiet").textContent = "+" + fmt(s.unfiredStake ?? 0);
+  $("poolNow").textContent = fmt(s.poolNow ?? s.backerTotal);
+  $("poolNote").hidden = s.status !== "live";
   const firedTraps = s.traps.filter((t) => t.status === "fired");
   $("firedN").textContent = firedTraps.length;
   $("hints").textContent = `${s.hintsBought}`;

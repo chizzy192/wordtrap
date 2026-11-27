@@ -8,6 +8,11 @@ const USDC = 1_000_000; // 6 decimals
 /** Mock "pubkeys" are any string; we hash them to 32 bytes so commitments stay well-formed. */
 import { sha256 } from "@noble/hashes/sha2.js";
 export function mockKey(name: string): Uint8Array { return sha256(new TextEncoder().encode("mockkey:" + name)); }
+/** The treasury the mock chain reports. Defaults to a derived key; with a real treasury keypair on the server
+ *  (TREASURY_KEYPAIR, for USDC deposits and cash-outs) it is that keypair's public key, so the address viewers hash
+ *  commitments with, pay into, and are paid from is one and the same. */
+let TREASURY_PUBKEY: Uint8Array = mockKey("treasury");
+export function setMockTreasury(pubkey: Uint8Array) { TREASURY_PUBKEY = pubkey; }
 
 interface MTrap extends ChainTrap { commitment: string; stakeRaw: bigint }
 
@@ -90,7 +95,7 @@ export class MockChain implements Chain {
   }
 
   /** Mock treasury: the name "treasury", hashed like every other mock key. */
-  treasury() { return { setter: "treasury", pubkey: mockKey("treasury") }; }
+  treasury() { return { setter: "treasury", pubkey: TREASURY_PUBKEY }; }
   trapCommitment(trapId: string) { return this.traps.get(trapId)?.commitment; }
 
   onTrapFired(cb: (e: TrapFiredEvent) => void) { this.ev.on("fired", cb); }

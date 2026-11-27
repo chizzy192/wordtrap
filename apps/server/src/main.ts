@@ -21,6 +21,9 @@ import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
 import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58, isSolanaAddress, confirmPayment, confirmUsdcPayment, reconcileDeposits, pollarFromEnv, toMicro, fromMicro, microToUsd, MICRO, type PollarGateway, type PollarSession, type SolanaRpc } from "./fiat.ts";
 import { MemoryMoneyStore, SupabaseMoneyStore, bindWallet, refundOrphans, migrateLedger, type MoneyStore, type SupabaseLike } from "./store.ts";
+import { SolanaTreasury, type TreasuryWallet } from "./treasury.ts";
+import { Withdrawals } from "./withdrawals.ts";
+import { setMockTreasury } from "./chain/mock.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
 import { MemoryProfileStore, validateName, shortAddress, type ProfileStore } from "./profiles.ts";
 import { RoomError } from "./rooms.ts";
@@ -68,6 +71,11 @@ export interface AppOptions {
   /** Durable money for Pollar players: a Supabase client (or a fake in tests). Default: SUPABASE_URL +
    *  SUPABASE_SERVICE_ROLE_KEY from the environment; `null` forces memory. Guests never touch it. */
   supabase?: SupabaseLike | null;
+  /** The treasury wallet that pays cash-outs (and receives deposits). Default: TREASURY_KEYPAIR from the environment
+   *  (a Solana CLI JSON secret key, path or inline); `null` = withdrawals not set up. Tests hand in a fake. */
+  treasury?: TreasuryWallet | null;
+  /** How long a withdrawal waits for finality before answering "pending" (tests shorten it). */
+  withdrawWaitMs?: number;
   /** Let the funds page bind the wallet address the SDK shows when Pollar's server side gives none (env
    *  ALLOW_CLIENT_WALLET_BINDING=1). Off by default: a client could bind another player's address first. */
   allowClientWalletBinding?: boolean;
@@ -83,7 +91,7 @@ export interface AppOptions {
   houseDelayMs?: number;
 }
 
-export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; store: MoneyStore | null; players: MoneyStore; port(): number; listen(port: number): Promise<number>; close(): Promise<void>; startup(): Promise<{ refunds: { user: string; micro: number; ref: string }[]; migrated: { deposits: number; balances: number } | null }> }
+export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; store: MoneyStore | null; players: MoneyStore; withdrawals: Withdrawals; port(): number; listen(port: number): Promise<number>; close(): Promise<void>; startup(): Promise<{ refunds: { user: string; micro: number; ref: string }[]; migrated: { deposits: number; balances: number } | null }> }
 const LEDGER_DEFAULT = fileURLToPath(new URL("../../../data/fiat-ledger.json", import.meta.url));
 /** Whether apps/stake was built with VITE_POLLAR_PUBLISHABLE_KEY: its index.html carries <meta name="wt-pollar" content="configured|missing">. */
 async function stakeBuildPollar(): Promise<"configured" | "missing" | "not built"> {
@@ -148,6 +156,11 @@ export function createApp(o: AppOptions = {}): App {
     try { await storeFor(user).applyDelta(user, delta, kind, ref); }
     catch (e) { console.warn(`[fiat] ${kind} ${ref} queued for retry:`, (e as Error).message); ledger.enqueue({ user, delta, kind, ref }); }
   }
+  // Cash-out: the treasury that signs USDC transfers to players. With a real keypair, the mock chain reports its public
+  // key as the treasury, so deposits, commitments and withdrawals all use one address.
+  const treasuryWallet: TreasuryWallet | null = o.treasury === undefined ? SolanaTreasury.fromEnv(process.env, o.usdcMint ?? process.env.USDC_MINT ?? USDC_MINTS.devnet) : o.treasury;
+  if (treasuryWallet instanceof SolanaTreasury && chainKind === "mock") setMockTreasury(treasuryWallet.publicKeyBytes());
+  const withdrawals = new Withdrawals({ storeFor, stores: () => (supa ? [supa, memStore] : [memStore]), treasury: () => treasuryWallet, log: console.log, waitMs: o.withdrawWaitMs, pollMs: o.withdrawWaitMs ? Math.min(200, o.withdrawWaitMs) : undefined });
   const planted = new Map<string, any>();                       // plant ref → trap, so a retried plant is not charged or planted twice
   const backCount = new Map<string, number>();                  // runId:user → backs so far (each back gets its own ref)
   const rpc = o.rpc ?? new JsonRpc(process.env.RPC_URL ?? "https://api.devnet.solana.com");
@@ -196,6 +209,7 @@ export function createApp(o: AppOptions = {}): App {
         else await confirmPayment(ledger, pollar as MockPollar, id, user);
       } catch (e) { console.warn(`[fiat] pending payment ${id} still unconfirmed:`, (e as Error).message); }   // stays pending (or was marked failed), never credited
     }
+    try { await withdrawals.sweep(); } catch (e) { console.warn("[fiat] withdrawal sweep failed:", (e as Error).message); }
     for (const job of ledger.queued()) {                          // game money that could not reach the store earlier
       try { await storeFor(job.user).applyDelta(job.user, job.delta, job.kind, job.ref); ledger.dequeue(job.ref); }
       catch (e) { console.warn(`[fiat] ${job.kind} ${job.ref} still queued:`, (e as Error).message); }
@@ -249,7 +263,7 @@ export function createApp(o: AppOptions = {}): App {
         const stakeBuild = await stakeBuildPollar();
         if (stakeBuild !== "configured") pollarMissing.push(`VITE_POLLAR_PUBLISHABLE_KEY (build time, apps/stake${stakeBuild === "not built" ? " not built" : ""})`);
         const storage = supa ? ((await supa.ping()) ? "supabase" : "supabase-unreachable") : "memory";
-        return json(res, 200, { ok: true, pollar: pollarMissing.length ? "missing" : "configured", pollarMissing, stakeBuild, storage });
+        return json(res, 200, { ok: true, pollar: pollarMissing.length ? "missing" : "configured", pollarMissing, stakeBuild, storage, withdrawals: treasuryWallet ? "ready" : "not configured" });
       }
 
       // ---- lobby ----
@@ -385,6 +399,15 @@ export function createApp(o: AppOptions = {}): App {
         console.log(`[fiat] bound a wallet for Pollar user ${s.userId.slice(0, 6)}… (client-claimed; Pollar gave none)`);
         reconcileSoon({ ...s, wallet });
         return json(res, 200, { wallet, source: "bound" });
+      }
+      if (p === "/api/v1/fiat/withdraw" && req.method === "POST") {
+        // Cash-out to the player's own Pollar wallet. The destination is the wallet Pollar verified: never from the client.
+        if (pollar.kind !== "pollar") return json(res, 404, { error: "Cash-out only exists with Pollar sign-in." });
+        const b = await readJson(req);
+        const who = await whoIs(req, b);
+        if (!who.session) throw new FiatError("Sign in with Google to withdraw. Guests play with test funds that cannot be cashed out.", 401);
+        const r = await withdrawals.request(who.id, who.session.wallet!, b.amount, b.requestId);
+        return json(res, r.http, { ...r.body, ...(await bal(who.id)) });
       }
       if (p === "/api/v1/fiat/reconcile" && req.method === "POST") {
         if (pollar.kind !== "pollar") return json(res, 404, { error: "Nothing to reconcile in demo mode." });
@@ -668,6 +691,7 @@ export function createApp(o: AppOptions = {}): App {
       try { migrated = await migrateLedger(ledger, supa); if (migrated.deposits || migrated.balances) console.log(`[fiat] migrated ${migrated.deposits} deposits and ${migrated.balances} balances from the ledger file into Supabase`); }
       catch (e) { console.warn("[fiat] migration skipped:", (e as Error).message); }
     }
+    try { const w = await withdrawals.sweep(); if (w.settled || w.refunded) console.log(`[fiat] withdrawals on start: ${w.settled} settled, ${w.refunded} refunded`); } catch (e) { console.warn("[fiat] withdrawal sweep failed:", (e as Error).message); }
     const refunds: { user: string; micro: number; ref: string }[] = [];
     const live = new Set(runs.all().filter((r) => !r.match.finished()).map((r) => r.id));
     for (const st of supa ? [supa, memStore] : [memStore]) {
@@ -677,7 +701,7 @@ export function createApp(o: AppOptions = {}): App {
     return { refunds, migrated };
   }
   return {
-    server, runs, ledger, pollar, store: supa, players, startup,
+    server, runs, ledger, pollar, store: supa, players, withdrawals, startup,
     port: () => port,
     listen: (want: number) => new Promise<number>((r) => server.listen(want, async () => { port = (server.address() as any).port; await startup(); r(port); })),
     close: () => { clearInterval(retry); houseStop.abort(); return new Promise<void>((r) => server.close(() => r())); },

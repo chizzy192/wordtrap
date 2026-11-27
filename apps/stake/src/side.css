@@ -60,6 +60,14 @@ header { display:flex; align-items:center; gap:14px; padding:22px 0 10px; flex-w
 .title { font:800 clamp(36px, 3.2vw, 56px)/1 var(--cond); margin:0 0 6px; color:var(--text); }
 .title.blue { color:var(--blue-text); }
 .line { color:var(--soft); margin:0 0 20px; font-size:17px; }
+.poolrows { margin:10px 0 0; padding:0; display:grid; gap:4px; }
+.poolrows > div { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+.poolrows dt { color:var(--soft); }
+.poolrows dd { margin:0; font:800 1.15em/1.2 var(--cond); font-variant-numeric:tabular-nums; }
+.poolrows .total { border-top:2px solid var(--line); padding-top:6px; margin-top:2px; }
+.poolrows .total dt { color:var(--text); font-weight:600; }
+.poolrows .total dd { color:var(--blue-text); font-size:1.45em; }
+.poollabel { margin:14px 0 2px; font-weight:600; color:var(--text); }
 .figure { font:800 clamp(54px, 5.5vw, 96px)/1 var(--cond); color:var(--blue-text); letter-spacing:-1px; }
 .under { margin:6px 0 20px; font-size:16px; }
 .soft { color:var(--soft); }

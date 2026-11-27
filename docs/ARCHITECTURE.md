@@ -219,6 +219,15 @@ network than `RPC_URL` is refused (409). The SDK exposes no access-token getter:
 session row the SDK persists (`pollar:<apiKeyHash>:session`). Webhooks are not built; everything is pull-based.
 Cash top-ups through ramp orders are [ROADMAP].
 
+**Cash-out** (`POST /api/v1/fiat/withdraw { amount, requestId }`, `apps/server/src/withdrawals.ts`): a Pollar
+player moves game balance back to the wallet Pollar verified for them, never to a client-supplied address. The
+balance drops first (`apply_delta` kind `withdraw`, ref `withdraw:<requestId>`, so a repeat is a no-op), the
+treasury (`TREASURY_KEYPAIR`, `apps/server/src/treasury.ts`) signs a `transferChecked` of USDC to the player's
+associated token account (created if missing) and the signature is recorded (`withdraw-pending`) before it is
+broadcast; finality writes `withdraw-sent`, a definite failure refunds (`refund:withdraw:<requestId>`), and an
+unknown outcome stays pending and is re-checked every 30 s and on startup. Before any debit the treasury must hold
+the USDC and the SOL for the fee, otherwise "Withdrawals are paused for a moment. Your balance is safe."
+
 ## Rooms and seats
 
 One room per run with four seats (`apps/server/src/rooms.ts`). A seat is a server-side record:

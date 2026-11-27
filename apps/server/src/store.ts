@@ -26,6 +26,8 @@ export interface MoneyStore {
   history(user: string, n: number): Promise<LedgerEntry[]>;
   /** Stake rows (plant, back) and the rows that close them (bounty, payout, settle, refund). */
   stakeRows(): Promise<StakeRow[]>;
+  /** Ledger rows of the given kinds, oldest first. */
+  rows(kinds: string[]): Promise<StakeRow[]>;
   player(wallet: string): Promise<Player | null>;
   playerByUser(userId: string): Promise<Player | null>;
   upsertPlayer(p: { userId: string; wallet?: string | null; name?: string | null }): Promise<Player>;
@@ -45,7 +47,8 @@ export class MemoryMoneyStore implements MoneyStore {
   async depositsOf(user: string) { return this.ledger.creditedSignatures(user); }
   async applyDelta(user: string, delta: number, kind: string, ref: string) { return this.ledger.apply(user, delta, kind, ref); }
   async history(user: string, n: number) { return this.ledger.history(user, n); }
-  async stakeRows() { return this.ledger.history(undefined, 100_000).filter((h) => h.ref && ["plant", "back", "bounty", "payout", "settle", "refund"].includes(h.reason)).map((h) => ({ user: h.user, kind: h.reason, micro: h.delta, ref: h.ref! })); }
+  async stakeRows() { return this.rows(["plant", "back", "bounty", "payout", "settle", "refund"]); }
+  async rows(kinds: string[]) { return this.ledger.history(undefined, 100_000).filter((h) => h.ref && kinds.includes(h.reason)).map((h) => ({ user: h.user, kind: h.reason, micro: h.delta, ref: h.ref! })); }
   async player(wallet: string) { for (const p of this.players.values()) if (p.wallet === wallet) return p; return null; }
   async playerByUser(userId: string) { return this.players.get(userId) ?? null; }
   async upsertPlayer(p: { userId: string; wallet?: string | null; name?: string | null }) {
@@ -95,8 +98,9 @@ export class SupabaseMoneyStore implements MoneyStore {
     const rows: any[] = (await this.q(() => this.db.from("ledger").select("id, user_id, kind, micro, ref").eq("user_id", user).order("id", { ascending: false }).limit(n))) ?? [];
     return rows.reverse().map((r) => ({ ts: 0, user: String(r.user_id), delta: Number(r.micro), reason: String(r.kind), ref: r.ref == null ? undefined : String(r.ref) }));
   }
-  async stakeRows() {
-    const rows: any[] = (await this.q(() => this.db.from("ledger").select("user_id, kind, micro, ref").in("kind", ["plant", "back", "bounty", "payout", "settle", "refund"]))) ?? [];
+  async stakeRows() { return this.rows(["plant", "back", "bounty", "payout", "settle", "refund"]); }
+  async rows(kinds: string[]) {
+    const rows: any[] = (await this.q(() => this.db.from("ledger").select("user_id, kind, micro, ref").in("kind", kinds).order("id", { ascending: true }))) ?? [];
     return rows.map((r) => ({ user: String(r.user_id), kind: String(r.kind), micro: Number(r.micro), ref: String(r.ref ?? "") }));
   }
   private row(d: any): Player | null { return d ? { userId: String(d.user_id), wallet: d.wallet == null ? null : String(d.wallet), name: d.display_name == null ? null : String(d.display_name) } : null; }

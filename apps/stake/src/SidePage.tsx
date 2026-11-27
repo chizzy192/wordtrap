@@ -232,8 +232,14 @@ export function Side({ mode }: { mode: Mode }) {
             {state && !state.backingOpen && <span className={`tag${closedSlam ? " slam" : ""}`}>Closed</span>}
             <h2 id="backh" className="title blue">Back Byte</h2>
             <p className="line">You win when the mines stay quiet.</p>
+            <dl className="poolrows" aria-label="The backers' pool">
+              <div><dt>Backers put in</dt><dd>{usd(state?.backerTotal ?? 0)}</dd></div>
+              <div><dt>Bonuses paid</dt><dd>−{usd(state?.bonusesPaid ?? 0)}</dd></div>
+              <div><dt>Quiet mines</dt><dd>+{usd(state?.unfiredStake ?? 0)}</dd></div>
+            </dl>
+            <p className="poollabel">In the pool now</p>
             <div className="figure">{usd(pool)}</div>
-            <p className="soft under">in the pool from {state?.backerCount ?? 0} backer{state?.backerCount === 1 ? "" : "s"}</p>
+            <p className="soft under">from {state?.backerCount ?? 0} backer{state?.backerCount === 1 ? "" : "s"}{live ? ". Quiet mines join the pool when the run ends." : ""}</p>
             {hasPosition ? (
               <>
                 <div className={`receipt${stamp ? " stamp" : ""}`} role="status">
