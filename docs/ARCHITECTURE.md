@@ -277,6 +277,24 @@ back it (`BACKER_NO_SEAT`, `SEATED_NO_BACK` in `apps/server/src/main.ts`, enforc
 is closed; the side page shows "Watch the run" after backing and the board shows the backer's banner ("You backed Byte
 with $X. In the pool now $Y", live) with no planting controls. Anyone watches a public room without signing in.
 
+**The board inside the Byte Arena embed** (`apps/watch/index.html`, served with `Content-Security-Policy: frame-ancestors
+'self' https://app.bytearena.fun` and `text/html`). Watching needs no account and must never stop: one global handler
+logs errors and unhandled rejections and leaves the loop alone; every poll runs one at a time, validates the answer
+(`normalize()` gives every optional field a known shape: tiles, hand, traps, hint, deck, room, seats, nextHand, pool
+figures) and skips a partial one; three failed polls in a row show "Reconnecting…" and back off (2 to 30 s) without ever
+stopping, hidden tab or not; a run that does not exist is asked again every 10 s; the paced event queue is capped at 40
+(a viewer far behind skips ahead instead of growing without bound); a throw inside one event's playback is logged and the
+chain continues. Optional reads follow one rule: no 4xx for simply not being signed in. `GET /runs/:id/my-position` is
+200 for anyone (a neutral position for no identity, a stale wallet id or an expired token), the board asks it every 5 s
+only with a live identity and never inside the embed, and a wallet identity with no session token is forgotten locally
+instead of looping on 401s; profile and balance are read only with a live identity. Sign-in from the embed opens the
+funds page in a new tab; nothing on the board navigates the top window or opens a dialog. `/watch/preview` serves a
+sample board (turn 1 on the built-in deck, no run) so the page can be shown before a run exists.
+`apps/server/test/embed.test.ts` plays a whole run (house Byte, bots, mines, a detonation, a backer, 25+ turns) with the
+board framed at 420x320, 640x360 and 960x540, hidden for a while, across a server restart, plus the preview and an
+unknown run, and fails on any console error, thrown error, failed request or 4xx/5xx; it skips when Chrome is absent.
+`scripts/browser-embed-soak.mjs` samples DOM nodes, listeners, heap and script time over ten minutes.
+
 **Names.** A signed-in player's display name is the one they set once (`PUT /api/v1/profile`), else the Google name
 Pollar's profile carries (adopted on the first verified sign-in, trimmed to the name rule), else the short wallet
 address. Guests are asked once, right after choosing to play as a guest, and may skip. No action (seat, plant, back,

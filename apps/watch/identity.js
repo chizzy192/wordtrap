@@ -62,9 +62,15 @@ export const identity = {
   label(id, players = {}) { if (!id) return ""; if (id === this.id && this.name) return this.name; return players[id] || short(id); },
   /** Headers for the server: demo identity rides in x-user (the Pollar session token replaces it in wallet mode). */
   headers() { const h = { "content-type": "application/json" }; if (this.id) h["x-user"] = this.id; const t = store.get("wt.session.token"); if (t) h.authorization = `Bearer ${t}`; return h; },
+  /** A wallet identity is only as good as its session token: without one (signed out elsewhere, token gone) the pages treat the viewer as signed out. */
+  get signedIn() { return !!this.id && (this.mode !== "wallet" || !!store.get("wt.session.token")); },
+  /** The server no longer accepts this identity (an expired Pollar session, say): forget it locally so the page reads as signed out instead of looping on 401s. */
+  forget() { store.set(KEY_ID, null); store.set(KEY_MODE, null); store.set(KEY_NAME, null); },
   async fetchProfile() {
     if (!this.id) return null;
+    if (!this.signedIn) { this.forget(); return null; }
     const r = await fetch("/api/v1/profile", { headers: this.headers() });
+    if (r.status === 401) { this.forget(); return null; }
     if (!r.ok) return null;
     const p = await r.json();
     store.set(KEY_NAME, p.name);
@@ -78,8 +84,9 @@ export const identity = {
     return p;
   },
   async balance() {
-    if (!this.id) return null;
+    if (!this.id || !this.signedIn) return null;
     const r = await fetch("/api/v1/fiat/balance", { headers: this.headers() });
+    if (r.status === 401) { this.forget(); return null; }
     return r.ok ? r.json() : null;
   },
   /** Guest starting funds, credited exactly once per guest id (the payment id makes it idempotent). */

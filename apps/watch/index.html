@@ -655,8 +655,42 @@ const $ = (id) => document.getElementById(id);
 const fmt = (n) => "$" + Number(n || 0).toFixed(2);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const enc = new TextEncoder();
-const POLL_MS = 1200;
+const POLL_MS = 1200, MYPOS_MS = 5000;
 let runId = (location.pathname.match(/^\/watch\/([^/]+)/) || [])[1] || null;
+// ---- hardening: this page lives inside the Byte Arena iframe and must never stop rendering or polling ----
+const EMBEDDED = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
+const problems = [];   // the last few things that went wrong, kept for the console; nothing here changes what the viewer sees
+function noteProblem(kind, err) {
+  problems.push({ kind, at: Date.now(), message: String(err && err.message ? err.message : err) }); if (problems.length > 20) problems.shift();
+  console.error(`[watch] ${kind}:`, err);
+}
+window.addEventListener("error", (e) => noteProblem("error", e.error ?? e.message));
+window.addEventListener("unhandledrejection", (e) => noteProblem("rejection", e.reason));
+/** Run a step of the render loop; a throw is logged and the loop goes on. */
+const guard = (what, fn) => { try { return fn(); } catch (e) { noteProblem(what, e); return undefined; } };
+const arr = (x) => (Array.isArray(x) ? x : []);
+const num = (x, d = 0) => (Number.isFinite(Number(x)) ? Number(x) : d);
+/** A board state with every optional field in a known shape, so a partial or odd answer never throws in render(). */
+function normalize(s) {
+  if (!s || typeof s !== "object" || !Array.isArray(s.tiles) || !Array.isArray(s.hand)) return null;
+  const n = { ...s };
+  n.tiles = s.tiles.map((t) => ({ ...(t && typeof t === "object" ? t : {}), prompt: String(t?.prompt ?? ""), cleared: !!t?.cleared, needed: num(t?.needed, 3), played: arr(t?.played).map(String) }));
+  n.hand = s.hand.filter((w) => typeof w === "string");
+  n.traps = arr(s.traps).filter((t) => t && typeof t === "object").map((t) => ({ ...t, id: String(t.id ?? ""), setter: String(t.setter ?? ""), stake: num(t.stake), armedTurn: num(t.armedTurn), status: String(t.status ?? "armed") }));
+  n.spoken = arr(s.spoken).filter((w) => w && typeof w === "object"); n.challenged = arr(s.challenged).filter((c) => c && typeof c === "object");
+  n.position = Math.max(0, num(s.position)); n.turn = num(s.turn); n.fuse = num(s.fuse); n.fuseTotal = num(s.fuseTotal, 180) || 180; n.score = num(s.score);
+  n.backerTotal = num(s.backerTotal); n.trapTotal = num(s.trapTotal); n.hintsBought = num(s.hintsBought); n.bonusesPaid = num(s.bonusesPaid); n.unfiredStake = num(s.unfiredStake); n.poolNow = num(s.poolNow, n.backerTotal);
+  n.status = typeof s.status === "string" ? s.status : "live";
+  n.hint = s.hint && typeof s.hint === "object" ? s.hint : null;
+  n.deck = s.deck && typeof s.deck === "object" ? s.deck : null;
+  n.nextHand = s.nextHand && Array.isArray(s.nextHand.hand) ? s.nextHand : null;
+  n.next = s.next && Array.isArray(s.next.hand) ? s.next : null;
+  n.seats = Array.isArray(s.seats) ? s.seats : undefined;
+  n.room = s.room && typeof s.room === "object" ? s.room : undefined;
+  n.safe = typeof s.safe === "string" ? s.safe : null; n.shielded = !!s.shielded;
+  n.callsign = typeof s.callsign === "string" ? s.callsign : ""; n.matchId = String(s.matchId ?? runId ?? "");
+  return n;
+}
 let state = null, lastSeq = 0, fired = new Set(), pendingMulti = false;
 const mySecrets = new Map(); // trapId -> {word, salt, setter, armedTurn}
 // ---- identity (wallet address or guest id), display names from the feed, funds ----
@@ -913,9 +947,9 @@ function onEvent(e) {
   switch (e.type) {
     case "action": { const detail = String(e.detail).replace(/\s·\s/g, ", ").replace(/\s—\s/g, ", "); $("action").innerHTML = `<b>${esc(prose[e.action] ?? e.action)}</b> — ${esc(detail)}`; tick(actionLine(e), "byte"); break; }
     case "hint": break;   // covered by the action line
-    case "trap_planted": tick(`${mySecrets.has(e.trap.id) ? "You" : playerName(e.trap.setter)} armed a mine for ${fmt(e.trap.stake)}.`, "mine"); break;
-    case "trap_fired": fired.add(e.trap.word); if (!pendingMulti) boom(e.trap.word, e.trap.setter || "a viewer", e.payout); tick(`${quoted(e.trap.word)} blew up. ${mySecrets.has(e.trap.id) ? "You take" : playerName(e.trap.setter) + " takes"} ${fmt(e.payout)} and Byte loses ${e.fuseBurn} fuse.`, "fire"); break;
-    case "multi_boom": multiBoom(e); tick(`${e.count} mines on ${quoted(e.word)} blew up. ${e.setters.map(playerName).join(" and ")} take ${fmt(e.payout)} and Byte loses ${e.fuseBurn} fuse.`, "fire"); break;
+    case "trap_planted": { const t = e.trap ?? {}; tick(`${mySecrets.has(t.id) ? "You" : playerName(t.setter)} armed a mine for ${fmt(t.stake)}.`, "mine"); break; }
+    case "trap_fired": if (!e.trap) break; fired.add(e.trap.word); if (!pendingMulti) boom(e.trap.word, e.trap.setter || "a viewer", e.payout); tick(`${quoted(e.trap.word)} blew up. ${mySecrets.has(e.trap.id) ? "You take" : playerName(e.trap.setter) + " takes"} ${fmt(e.payout)} and Byte loses ${e.fuseBurn} fuse.`, "fire"); break;
+    case "multi_boom": { if (!Array.isArray(e.setters)) break; multiBoom(e); tick(`${e.count} mines on ${quoted(e.word)} blew up. ${e.setters.map(playerName).join(" and ")} take ${fmt(e.payout)} and Byte loses ${e.fuseBurn} fuse.`, "fire"); break; }
     case "match_end": tick(e.status === "escaped" ? `Byte escaped. Backers share the ${fmt(state?.poolNow ?? 0)} left in the pool.` : `Byte detonated. ${e.reason}.`, e.status === "escaped" ? "pay" : "fire"); break;
   }
 }
@@ -962,7 +996,7 @@ function renderPicker() {
 }
 async function pollPicker() {
   if (!runId || !$("plantPanel").classList.contains("open")) return;
-  try { const r = await fetch(`/runs/${runId}/picker`, { headers: identity.id ? identity.headers() : {} }); if (r.ok) { pickerData = await r.json(); renderPicker(); } } catch { /* next tick */ }
+  try { const r = await fetch(`/runs/${runId}/picker`, { headers: identity.signedIn ? identity.headers() : {} }); if (r.ok) { const d = await r.json(); if (d && typeof d === "object") { pickerData = d; guard("picker", renderPicker); } } } catch (e) { /* next tick */ }
 }
 setInterval(pollPicker, 1500);
 $("plantPanel").addEventListener("click", (e) => {
@@ -1025,6 +1059,8 @@ let playing = false, batchState = null;
 
 // ---- polling: no websocket, no visibility checks, works inside the Byte Arena iframe ----
 async function poll() {
+  if (polling || Date.now() < nextTryAt) return;   // one in flight at a time; backing off after failures
+  polling = true;
   try {
     if (!runId) {
       const cur = await fetch("/api/v1/current").then((r) => r.json());
@@ -1035,36 +1071,58 @@ async function poll() {
     // seconds ago (default SPECTATE_DELAY_SECONDS). paced=1 attaches a board snapshot to every event.
     // same plain-interval poll; the identity headers only let the server count the poll as seat activity
     const gen = roomGen;
-    const r = await fetch(`/runs/${runId}/spectate?after=${lastSeq}&paced=1${DELAY !== null ? `&delay=${DELAY}` : ""}`, { headers: identity.id ? identity.headers() : {} });
-    if (!r.ok) { $("meta").textContent = `Run ${runId} is not available (${r.status})`; return; }
-    const { seq, events, state: s, players: names, room: rm } = await r.json();
-    if (names) players = names;
-    if (rm && gen === roomGen) room = rm;   // undelayed; ignored if the viewer acted while this poll was in flight
-    lastSeq = seq; batchState = s;
-    // which side the signed-in viewer is on (backer stake, seat), for the banner and the controls
-    if (identity.id) fetch(`/runs/${runId}/my-position`, { headers: identity.headers() }).then((r) => (r.ok ? r.json() : null)).then((p) => { if (p) myPos = p; }).catch(() => {});
-    queue.push(...events);
-    if (!playing && !queue.length) { snapshotHand(); state = s; render(); }   // nothing new: keep the clock/fuse honest
+    const r = await fetch(`/runs/${runId}/spectate?after=${lastSeq}&paced=1${DELAY !== null ? `&delay=${DELAY}` : ""}`, { headers: identity.signedIn ? identity.headers() : {} });
+    if (!r.ok) { failedPoll(r.status === 404 ? `Run ${runId} is not available (${r.status})` : undefined); return; }
+    const body = await r.json();
+    const s = normalize(body?.state);
+    if (!s || !Array.isArray(body.events)) { failedPoll(); return; }   // a partial answer is skipped, never fatal
+    const { seq, events, players: names, room: rm } = body;
+    failures = 0; nextTryAt = 0;
+    if (names && typeof names === "object") players = names;
+    if (rm && typeof rm === "object" && Array.isArray(rm.seats) && gen === roomGen) room = rm;   // undelayed; ignored if the viewer acted while this poll was in flight
+    lastSeq = num(seq, lastSeq); batchState = s;
+    queue.push(...events.filter((e) => e && typeof e === "object" && typeof e.type === "string"));
+    if (queue.length > QUEUE_MAX) queue.splice(0, queue.length - QUEUE_MAX);   // far behind: skip ahead rather than grow without bound
+    if (!playing && !queue.length) guard("render", () => { snapshotHand(); state = s; render(); });   // nothing new: keep the clock/fuse honest
     else playNext();
-  } catch (e) { $("meta").textContent = "Reconnecting"; }
+  } catch (e) { failedPoll(); }
+  finally { polling = false; }
 }
+/** Three failed polls in a row show "Reconnecting…" and back off (2, 4, 8, 16, 30 s); polling never stops, hidden tab or not. */
+function failedPoll(text) {
+  failures++;
+  if (text) { $("meta").textContent = text; nextTryAt = Date.now() + 10_000; return; }   // a run that does not exist: asked again every 10 s
+  if (failures >= 3) { $("meta").textContent = "Reconnecting…"; nextTryAt = Date.now() + Math.min(30_000, 2000 * 2 ** Math.min(4, failures - 3)); }
+}
+const QUEUE_MAX = 40;
+let polling = false, failures = 0, nextTryAt = 0;
 poll();
 setInterval(poll, POLL_MS);
+// which side the signed-in viewer is on (backer stake, seat): optional, every 5 s, never in the embed, never with no identity; a failure is "no position"
+async function pollPosition() {
+  if (!runId || EMBEDDED || !identity.signedIn) { myPos = null; return; }
+  try { const r = await fetch(`/runs/${runId}/my-position`, { headers: identity.headers() }); myPos = r.ok ? await r.json() : null; } catch (e) { myPos = null; }
+}
+pollPosition();
+setInterval(pollPosition, MYPOS_MS);
 
 function playNext() {
-  $("deciding").hidden = !queue.some((e) => e.type === "action");
+  guard("deciding", () => { $("deciding").hidden = !queue.some((e) => e.type === "action"); });
   if (playing) return;
   const e = queue.shift();
-  if (!e) { if (batchState && state !== batchState) { snapshotHand(); state = batchState; render(); } return; }
+  if (!e) { if (batchState && state !== batchState) guard("render", () => { snapshotHand(); state = batchState; render(); }); return; }
   playing = true;
-  snapshotHand();
-  if (e.state) { state = e.state; render(); }
-  // several mines on one word: one stacked flash, not N small ones
-  pendingMulti = e.type === "trap_fired" && queue.some((x) => x.type === "multi_boom" && x.word === e.trap.word);
-  onEvent(e);
+  let gap = SMALL_GAP_MS;
+  guard("event", () => {
+    snapshotHand();
+    if (e.state) { const ns = normalize(e.state); if (ns) { state = ns; render(); } }
+    // several mines on one word: one stacked flash, not N small ones
+    pendingMulti = e.type === "trap_fired" && queue.some((x) => x.type === "multi_boom" && x.word === e.trap?.word);
+    onEvent(e);
+    gap = e.type === "action" ? ACTION_GAP_MS : e.type === "trap_fired" || e.type === "multi_boom" ? BOOM_GAP_MS : SMALL_GAP_MS;
+  });
   pendingMulti = false;
-  const gap = e.type === "action" ? ACTION_GAP_MS : e.type === "trap_fired" || e.type === "multi_boom" ? BOOM_GAP_MS : SMALL_GAP_MS;
-  setTimeout(() => { playing = false; playNext(); }, reduced.matches ? Math.min(gap, 600) : gap);
+  setTimeout(() => { playing = false; playNext(); }, reduced.matches ? Math.min(gap, 600) : gap);   // the chain always continues
 }
 
 // ---- theme toggle (persisted, inside try/catch) ----
@@ -1215,7 +1273,7 @@ document.addEventListener("click", async (e) => {
   }
   if (t.id === "googleBtn") {
     // Pollar sign-in lives in the wallet page (it needs the SDK); it returns here afterwards
-    if (treasury?.mode === "pollar") location.href = `/stake/?return=${encodeURIComponent(location.pathname + location.search)}`;
+    if (treasury?.mode === "pollar") { const url = `/stake/?return=${encodeURIComponent(location.pathname + location.search)}`; if (EMBEDDED) window.open(url, "_blank", "noopener"); else location.href = url; }
     else $("googleHelp").textContent = "Google sign-in isn't set up on this server yet. Play as a guest for now.";
   }
   if (t.id === "nameLater") { closePopovers(); resumePending(); }
@@ -1233,9 +1291,9 @@ document.addEventListener("click", async (e) => {
 $("nameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("nameSave").click(); });
 (async () => {
   treasury = await fetch("/api/v1/treasury").then((r) => r.json()).catch(() => null);
-  if (identity.id) { await identity.fetchProfile().catch(() => null); await refreshBalance(); }
+  if (identity.id) { await identity.fetchProfile().catch(() => null); await refreshBalance(); }   // a wallet identity with no session, or a 401, signs the page out locally
   renderAccount(); updatePlantButton();
-  if (!identity.chosen) openFirstVisit();                 // small panel; the board keeps playing behind it
+  if (!identity.chosen && !EMBEDDED) openFirstVisit();    // small panel; the board keeps playing behind it; never inside the embed
 })();
 
 // ---- effects: everything below only reacts to a change between two polled states ----

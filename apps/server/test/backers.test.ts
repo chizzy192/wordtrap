@@ -36,7 +36,10 @@ test("one side per run: a seated player cannot back, a backer cannot take a seat
     // my-position tells the pages which side the viewer is on and why the other is closed
     const setter = await t.position(runId, "guest-SETTER01"); assert.equal(setter.side, "setter"); assert.equal(setter.seated, true); assert.equal(setter.cannotBack, SEATED_NO_BACK); assert.equal(setter.cannotSeat, null);
     const backer = await t.position(runId, "guest-BACKER01"); assert.equal(backer.side, "backer"); assert.equal(backer.stakeMicro, 1_000_000); assert.equal(backer.cannotSeat, BACKER_NO_SEAT); assert.equal(backer.cannotBack, null);
-    const nobody = await t.position(runId, "guest-WATCHER1"); assert.equal(nobody.side, null); assert.equal(nobody.cannotSeat, null); assert.equal(nobody.cannotBack, null);
+    const nobody = await t.position(runId, "guest-WATCHER1"); assert.equal(nobody.side, "none"); assert.equal(nobody.cannotSeat, null);
+    // no identity at all (the embed): 200 with a neutral position, never a 401
+    const anon = await fetch(`${t.base}/runs/${runId}/my-position`); assert.equal(anon.status, 200);
+    const a = await anon.json(); assert.equal(a.side, "none"); assert.equal(a.seated, false); assert.equal(a.stakeMicro, 0); assert.equal(a.canWatch, true); assert.equal(a.user, null); assert.equal(typeof a.maySeat, "boolean"); assert.equal(nobody.cannotBack, null);
     // a backer stays a backer: a second back is fine; leaving a seat makes backing possible again for the setter
     assert.equal((await t.back(runId, "guest-BACKER01")).status, 200);
     await t.seat(runId, "guest-SETTER01", "leave");

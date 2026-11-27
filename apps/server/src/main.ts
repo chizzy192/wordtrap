@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { MockChain } from "./chain/mock.ts";
 import type { Chain } from "./chain/types.ts";
-import { InvalidActionError, StaleTurnError, type MatchConfig } from "./match.ts";
+import { Match, InvalidActionError, StaleTurnError, type MatchConfig } from "./match.ts";
+import { SimWallet } from "./wallet.ts";
+import type { BoardState } from "@wordtrap/shared";
 import { RunManager, type Run } from "./runs.ts";
 import { handleRisk, requirement, simVerifier, facilitatorVerifier } from "./oracle.ts";
 import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
@@ -296,6 +298,16 @@ export function createApp(o: AppOptions = {}): App {
   }, 30_000);
   retry.unref();
 
+  /** The board for /watch/preview: a sample run at turn 1 on the built-in deck, built once, never played. Byte Arena can show the page before a run exists. */
+  let previewState: BoardState | null = null;
+  async function previewFeed() {
+    if (!previewState) {
+      const m = new Match({ matchId: "preview", callsign: "Byte", chain: new MockChain(), wallet: new SimWallet(), oracleUrl: "", cfg: o.cfg, seed: 7 });
+      previewState = await m.start();
+    }
+    const seats = [1, 2, 3, 4].map((no) => ({ kind: "open", no }));
+    return { seq: 0, events: [], state: { ...previewState, seats, host: null, private: false, room: { code: "preview", host: false, private: false } }, delay: 0, players: {}, room: { seats, host: null, private: false, you: { host: false, seat: null } } };
+  }
   /** I6: who is this viewer? Pollar mode: the access token (Authorization: Bearer) is verified with Pollar and the
    *  identity is the Solana wallet address; a guest id (guest-…) is still accepted for seats, names and rooms, but
    *  it can never be funded. Demo-credit mode: a plain {user} / x-user. */
@@ -677,10 +689,14 @@ export function createApp(o: AppOptions = {}): App {
       // A signed-in backer's position: stake, share of the pool, and the payout if the run ended now (proRata, like the program).
       const mp = /^\/runs\/([^/]+)\/my-position$/.exec(p);
       if (mp && req.method === "GET") {
+        if (mp[1] === "preview") return json(res, 200, { runId: "preview", user: null, side: "none", seated: false, canWatch: true, maySeat: false, mayBack: false, stakeMicro: 0, stakeUsd: 0, status: "live" });
         const run = runs.get(mp[1]);
         if (!run) return json(res, 404, { error: `unknown run ${mp[1]}` });
-        const user = await identify(req, Object.fromEntries(url.searchParams));
         const s = run.match.snapshot();
+        // a viewer with no identity (the Byte Arena embed, a signed-out tab) gets a neutral position, never a 401: watching needs no account
+        let user: string | null = null;
+        try { user = await identify(req, Object.fromEntries(url.searchParams)); } catch { user = null; }
+        if (!user) return json(res, 200, { runId: run.id, user: null, side: "none", seated: false, canWatch: true, maySeat: run.room.freeCount() > 0 && !run.match.finished(), mayBack: s.backingOpen, backingOpen: s.backingOpen, backingClosed: run.match.backingClosedReason(), cannotSeat: null, cannotBack: null, stakeMicro: 0, stakeUsd: 0, sharePct: 0, payoutNowMicro: 0, payoutNowUsd: 0, minesPaidMicro: 0, minesPaidUsd: 0, poolNowUsd: s.poolNow, backerCount: s.backerCount, status: s.status });
         const stakeMicro = ledger.backersOf(run.id)[user] ?? 0;
         const totalMicro = Math.round(s.backerTotal * MICRO);
         const poolMicro = Math.round(s.poolNow * MICRO);
@@ -689,7 +705,8 @@ export function createApp(o: AppOptions = {}): App {
         const seated = !!run.room.seatOf(user);
         return json(res, 200, {
           runId: run.id, user, backingOpen: s.backingOpen, backingClosed: run.match.backingClosedReason(),
-          side: stakeMicro > 0 ? "backer" : seated ? "setter" : null, seated,
+          side: stakeMicro > 0 ? "backer" : seated ? "setter" : "none", seated, canWatch: true,
+          maySeat: !seated && stakeMicro === 0 && run.room.freeCount() > 0 && !run.match.finished(), mayBack: !seated && s.backingOpen,
           cannotSeat: stakeMicro > 0 ? BACKER_NO_SEAT : null, cannotBack: seated ? SEATED_NO_BACK : null,
           stakeMicro, stakeUsd: fromMicro(stakeMicro),
           sharePct: totalMicro > 0 ? Math.round((10000 * stakeMicro) / totalMicro) / 100 : 0,
@@ -781,6 +798,7 @@ export function createApp(o: AppOptions = {}): App {
 
       // ---- spectators: watch page + mobile ----
       const sp = /^\/runs\/([^/]+)\/(spectate|plant|reveal)$/.exec(p);
+      if (sp && sp[1] === "preview" && sp[2] === "spectate") return json(res, 200, await previewFeed());   // /watch/preview: a sample board, no run
       if (sp) {
         const run = runs.get(sp[1]);
         if (!run) return json(res, 404, { error: `unknown run ${sp[1]}` });
