@@ -219,6 +219,15 @@ network than `RPC_URL` is refused (409). The SDK exposes no access-token getter:
 session row the SDK persists (`pollar:<apiKeyHash>:session`). Webhooks are not built; everything is pull-based.
 Cash top-ups through ramp orders are [ROADMAP].
 
+**Finding the wallet.** Pollar's verify content may carry only the Stellar wallet. The server then looks the user up in
+`GET /v3/users`: `q=<id>` (the live service does not match ids), `q=<email>` and `q=<Stellar key>` from the verify
+content, accepting only a row whose id equals the verified userId, then paging through the list (20 pages of 200 at
+most), cached per user; the shape-only diagnostic says which path found the row. A row without a Solana wallet, or no
+row, leaves the wallet unknown: `GET /api/v1/fiat/ready` answers `ready: false` and the funds page sends nothing.
+The way forward is the proof-of-control check (`apps/server/src/links.ts`): a one-time amount, paid exactly from the
+claimed wallet inside 10 minutes, links the address to the Pollar user (never from a claim alone) and is credited;
+reconciliation then credits earlier transfers from that wallet.
+
 **Cash-out** (`POST /api/v1/fiat/withdraw { amount, requestId }`, `apps/server/src/withdrawals.ts`): a Pollar
 player moves game balance back to the wallet Pollar verified for them, never to a client-supplied address. The
 balance drops first (`apply_delta` kind `withdraw`, ref `withdraw:<requestId>`, so a repeat is a no-op), the

@@ -104,6 +104,28 @@ for (const theme of ["light", "dark"]) {
     check(!(await ev(modalProbe)).open, `${name}: X closes`);
   }
 }
+// ---------- Part C: the readiness gate. When the server cannot credit (the 428 case), nothing is sent. ----------
+{
+  await vp(1366, 768);
+  let sendCalls = 0, confirmCalls = 0;
+  // Any payment or claim the page might send is counted and failed; the readiness gate must keep both at zero.
+  await send("Fetch.enable", { patterns: [{ urlPattern: "*/wallet/solana/transfer*", requestStage: "Request" }, { urlPattern: "*/api/v1/fiat/confirm*", requestStage: "Request" }] });
+  handlers.set("Fetch.requestPaused", (p) => {
+    if (p.request.url.includes("/wallet/solana/transfer")) sendCalls++; else confirmCalls++;
+    return send("Fetch.failRequest", { requestId: p.requestId, errorReason: "Failed" });
+  });
+  await goto(`${BASE}/stake/?demo=funded&ready=0&theme=light`); await sleep(1500);   // the 428 case: the server has no wallet it can credit
+  const name = "after-gate-428";
+  const btn = await ev(`(() => { const b = [...document.querySelectorAll("button")].find(b => /^Add \\$5 to game$/.test(b.textContent)); return b ? { disabled: b.disabled } : null; })()`);
+  check(btn !== null, `${name}: add button present`);
+  check(btn?.disabled === true, `${name}: add button disabled while the server cannot credit`);
+  check((await ev(`document.querySelector('[data-wt="link"] p')?.textContent ?? ""`)).startsWith("We couldn't find your Solana wallet with Pollar."), `${name}: the server's sentence is shown`);
+  check(await ev(`[...document.querySelectorAll("button")].some(b => b.textContent === "Start the wallet check")`), `${name}: the one-time wallet check is offered`);
+  await ev(`(() => { const b = [...document.querySelectorAll("button")].find(b => /^Add \\$5 to game$/.test(b.textContent)); if (b) { b.disabled = false; b.click(); } })()`); await sleep(1200);
+  check(sendCalls === 0 && confirmCalls === 0, `${name}: a forced click sends nothing (transfer calls ${sendCalls}, confirm calls ${confirmCalls})`);
+  await shot(join(OUT, `${name}.png`), true);
+  await send("Fetch.disable");
+}
 log("page errors:", errors.length ? errors.slice(0, 8) : "none");
 check(errors.length === 0, "no page script errors");
 log(failures.length ? `FAILED ${failures.length}: ${failures.join(" | ")}` : "all checks passed");

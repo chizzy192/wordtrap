@@ -98,6 +98,8 @@ header { display:flex; align-items:center; gap:14px; padding:16px 0 12px; flex-w
 .units { color:var(--soft); margin:0 0 12px; }
 .notice { border:3px solid var(--line); background:var(--sheet); box-shadow:5px 5px 0 var(--blue); padding:12px 16px; margin:0 0 16px; }
 .notice a { color:var(--blue-text); font-weight:600; }
+.notice.err { box-shadow:5px 5px 0 var(--red); color:var(--red-text); font-weight:600; }
+.notice p { margin:0 0 10px; }
 .status { margin:14px 0 0; font-weight:600; }
 .status.ok { color:var(--blue-text); }
 .status.err { color:var(--red-text); }

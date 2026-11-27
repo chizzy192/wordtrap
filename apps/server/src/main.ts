@@ -23,6 +23,7 @@ import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58
 import { MemoryMoneyStore, SupabaseMoneyStore, bindWallet, refundOrphans, migrateLedger, type MoneyStore, type SupabaseLike } from "./store.ts";
 import { SolanaTreasury, type TreasuryWallet } from "./treasury.ts";
 import { Withdrawals } from "./withdrawals.ts";
+import { WalletLinks } from "./links.ts";
 import { setMockTreasury } from "./chain/mock.ts";
 import { DeckManager, FirecrawlClient, MemoryDeckStore, SupabaseDeckStore, loadSources, playable, type FirecrawlLike, type DeckStore, type DeckSource } from "./decks.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
@@ -86,6 +87,9 @@ export interface AppOptions {
   deckToday?: () => string;
   /** ADMIN_TOKEN for POST /api/v1/decks/refresh (default from the environment). */
   adminToken?: string | null;
+  /** Clock and randomness for the one-time wallet-check amounts (tests). */
+  linkNow?: () => number;
+  linkRandom?: () => number;
   /** Let the funds page bind the wallet address the SDK shows when Pollar's server side gives none (env
    *  ALLOW_CLIENT_WALLET_BINDING=1). Off by default: a client could bind another player's address first. */
   allowClientWalletBinding?: boolean;
@@ -179,6 +183,7 @@ export function createApp(o: AppOptions = {}): App {
   const rpc = o.rpc ?? new JsonRpc(process.env.RPC_URL ?? "https://api.devnet.solana.com");
   const allowClientWalletBinding = o.allowClientWalletBinding ?? process.env.ALLOW_CLIENT_WALLET_BINDING === "1";
   const NO_WALLET = "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.";
+  const NO_WALLET_LINK = "We couldn't find your Solana wallet with Pollar. Do the one-time wallet check below to link it.";
   /** Which Solana cluster RPC_URL points at (from its genesis hash), cached. */
   let clusterCache: string | null = null;
   const cluster = async () => (clusterCache ??= GENESIS[await rpc.getGenesisHash()] ?? "unknown");
@@ -251,11 +256,13 @@ export function createApp(o: AppOptions = {}): App {
    *  verifySession), else the address this user bound through POST /api/v1/fiat/wallet. */
   async function sessionOf(token: string, o: { allowUnbound?: boolean } = {}): Promise<PollarSession> {
     const s = await pollar.verifySession(token);
-    if (!s.wallet && allowClientWalletBinding) s.wallet = (await players.playerByUser(s.userId))?.wallet ?? null;
-    if (!s.wallet && !o.allowUnbound) throw new FiatError(allowClientWalletBinding ? "We could not read your Solana wallet from Pollar. Open the funds page so it can send your wallet address." : NO_WALLET, 428);
+    // a wallet linked by proof of control (or earlier Pollar data) lives in players; the client-claim path only with the flag
+    if (!s.wallet) { const linked = (await players.playerByUser(s.userId).catch(() => null))?.wallet ?? null; if (linked) { s.wallet = linked; s.lookup = "linked"; } }
+    if (!s.wallet && !o.allowUnbound) throw new FiatError(allowClientWalletBinding ? "We could not read your Solana wallet from Pollar. Open the funds page so it can send your wallet address." : NO_WALLET_LINK, 428);
     if (s.fresh && s.wallet) { players.upsertPlayer({ userId: s.userId, wallet: s.wallet }).catch(() => {}); reconcileSoon(s); }
     return s;
   }
+  const links = new WalletLinks({ rpc, cfg: () => usdcCfg(), players, storeFor, log: console.log, now: o.linkNow, random: o.linkRandom });
   async function whoIs(req: IncomingMessage, body: Record<string, any>): Promise<{ id: string; session?: PollarSession }> {
     const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
     const u = String(body.user ?? req.headers["x-user"] ?? "").trim().slice(0, 64);
@@ -409,6 +416,44 @@ export function createApp(o: AppOptions = {}): App {
         const user = await identify(req, Object.fromEntries(url.searchParams));
         const st = storeFor(user);
         return json(res, 200, { ...(await bal(user)), mode: pollar.kind, storage: st.kind, traps: ledger.trapsOf(user), history: await st.history(user, 20), deposits: await st.depositsOf(user) });
+      }
+      if (p === "/api/v1/fiat/ready" && req.method === "GET") {
+        // The funds page asks this before any sendPayment: ready only when the session has a verified Solana wallet
+        // and it is the address the SDK is about to pay from. Otherwise nothing is sent.
+        if (pollar.kind !== "pollar") return json(res, 200, { ready: false, reason: "Payments only exist with Pollar sign-in." });
+        const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+        if (!m) return json(res, 401, { ready: false, reason: "Sign in with Google first." });
+        const s = await sessionOf(m[1].trim(), { allowUnbound: true });
+        const paying = String(url.searchParams.get("address") ?? "").trim();
+        if (!s.wallet) { const l = links.openFor(s.userId); return json(res, 200, { ready: false, link: true, reason: NO_WALLET_LINK, lookup: s.lookup ?? "none", openLink: l ? { amountMicro: l.amountMicro, expiresAt: l.expiresAt } : null }); }
+        if (paying && paying !== s.wallet) return json(res, 200, { ready: false, link: false, reason: `The wallet you're about to pay from (${paying.slice(0, 4)}…${paying.slice(-4)}) is not the one Pollar gave us for your account (${s.wallet.slice(0, 4)}…${s.wallet.slice(-4)}). Sign out and in again.` });
+        return json(res, 200, { ready: true, wallet: s.wallet, lookup: s.lookup ?? "verify" });
+      }
+      if (p === "/api/v1/fiat/link/start" && req.method === "POST") {
+        if (pollar.kind !== "pollar") return json(res, 404, { error: "Wallet checks only exist with Pollar sign-in." });
+        const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+        if (!m) throw new FiatError("Sign in with Google first.", 401);
+        const s = await sessionOf(m[1].trim(), { allowUnbound: true });
+        if (s.wallet) return json(res, 200, { linked: s.wallet, message: "Your wallet is already known. No check is needed." });
+        const l = links.start(s.userId);
+        return json(res, 200, { amountMicro: l.amountMicro, amountText: l.amountText, expiresAt: l.expiresAt, wording: l.wording, treasury: await treasuryAddress(), usdcMint: await usdcMint() });
+      }
+      if (p === "/api/v1/fiat/link/confirm" && req.method === "POST") {
+        if (pollar.kind !== "pollar") return json(res, 404, { error: "Wallet checks only exist with Pollar sign-in." });
+        const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+        if (!m) throw new FiatError("Sign in with Google first.", 401);
+        const b = await readJson(req);
+        const s = await sessionOf(m[1].trim(), { allowUnbound: true });
+        if (s.wallet) return json(res, 200, { status: "linked", wallet: s.wallet, credited: 0, signature: null, note: "already known" });
+        const r = await links.confirm(s.userId, String(b.address ?? "").trim(), b.signature ? String(b.signature).trim() : null);
+        if (r.status === "linked") {
+          // the wallet is known now: earlier uncredited transfers from it are credited once each
+          const session = { ...s, wallet: r.wallet };
+          let reconciled: { signature: string; micro: number }[] = [];
+          try { reconciled = await reconcileDeposits(ledger, rpc, await usdcCfg(), session, { log: console.log, store: storeFor(r.wallet) }); } catch (e) { console.warn("[fiat] reconciliation after link failed:", (e as Error).message); }
+          return json(res, 200, { ...r, reconciled, ...(await bal(r.wallet)) });
+        }
+        return json(res, r.status === "pending" ? 202 : 409, r);
       }
       if (p === "/api/v1/fiat/wallet" && req.method === "POST") {
         // Last resort, used only when Pollar's server side gives no Solana address for this user: the page sends the

@@ -206,6 +206,8 @@ export interface PollarSession {
   wallet: string | null;
   /** True on the call that verified the token with Pollar (not served from the cache). */
   fresh?: boolean;
+  /** Which lookup found the user's row when verify had no Solana wallet: "verify", "q=id", "q=email", "q=stellar", "pages", or "none". */
+  lookup?: string;
   /** Pollar network of the application: "testnet" (Solana devnet) or "mainnet". */
   network: "testnet" | "mainnet" | string;
   /** Unix ms when the token stops being valid. */
@@ -323,32 +325,72 @@ export class PollarServerApi implements PollarGateway {
     const c = p.content ?? {};
     const userId = String(c.userId ?? "");
     let wallet = findSolanaAddress({ wallet: c.wallet, wallets: c.wallets, wallet_public_key: c.wallet_public_key, solana: c.solana ?? c.solanaWallet });
+    let lookup = wallet ? "verify" : "none";
     if (!wallet) {
       // diagnostic (temporary): the shape only, never a value
       this.log(`[fiat] verify shape (no Solana wallet found): ${JSON.stringify(shapeOf(p))}`);
-      wallet = await this.listSolanaWallet(userId);
+      const email = String(c.profile?.mail ?? c.profile?.email ?? c.email ?? "").trim() || null;
+      const stellar = typeof c.wallet === "string" ? c.wallet : String(c.wallet?.public_key ?? c.wallet?.publicKey ?? c.wallet?.address ?? c.wallet_public_key ?? "").trim() || null;
+      const found = await this.findUserRow(userId, { email, stellar });
+      lookup = found.path;
+      if (found.row) {
+        wallet = findSolanaAddress({ wallets: found.row.wallets, wallet_public_key: found.row.wallet_public_key, wallet: found.row.wallet, solana: found.row.solana });
+        if (!wallet) this.log(`[fiat] users row found via ${found.path} but it has no Solana wallet yet; row shape: ${JSON.stringify(shapeOf(found.row))}`);
+      }
     }
     const expiresAt = toMs(c.expiresAt);
-    const s: PollarSession = { userId, wallet, network: String(c.network ?? ""), expiresAt, authProvider: c.authProvider ? String(c.authProvider) : undefined, fresh: true };
+    const s: PollarSession = { userId, wallet, network: String(c.network ?? ""), expiresAt, authProvider: c.authProvider ? String(c.authProvider) : undefined, fresh: true, lookup };
     if (expiresAt > Date.now()) this.cache.set(token, { ...s, fresh: false });
     if (this.cache.size > 5000) for (const [k, v] of this.cache) if (v.expiresAt <= Date.now()) this.cache.delete(k);
     return s;
   }
-  /** `GET /users?q=<userId>`: the user's wallets, one per chain. Null when the lookup has no Solana wallet or fails. */
-  async listSolanaWallet(userId: string): Promise<string | null> {
-    if (!userId) return null;
+  private readonly rowCache = new Map<string, { row: any; path: string; at: number }>();   // userId → the user's row (positive hits for the session, misses for a minute)
+  /** One page of GET /users. Rows come as content.items (live) or users/data/rows. */
+  private async usersPage(params: Record<string, string>): Promise<{ rows: any[]; total: number; page: number; totalPages: number; limit: number } | null> {
+    const qs = new URLSearchParams(params).toString();
+    const r = await fetch(`${this.base}/users?${qs}`, { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
+    const p: any = await r.json().catch(() => ({}));
+    if (!r.ok) { this.log(`[fiat] users lookup answered ${r.status} ${String(p.code ?? "")} for ${Object.keys(params).join(",")}`); return null; }
+    const c = p.content ?? p;
+    const rows: any[] = Array.isArray(c) ? c : (c.items ?? c.users ?? c.data ?? c.rows ?? []);
+    const limit = Number(c.limit ?? params.limit ?? rows.length) || rows.length || 1;
+    const total = Number(c.total ?? rows.length);
+    return { rows, total, page: Number(c.page ?? params.page ?? 1), totalPages: Number(c.totalPages ?? c.pages ?? Math.ceil(total / limit)), limit };
+  }
+  /**
+   * The user's row in GET /users, by exact id. `q` does not match on the user id on the live service, so: (a) q=<id>
+   * anyway, (b) q=<email> then q=<Stellar public key> from the verify content, accepting only a row whose id equals the
+   * verified userId, (c) page through GET /users (at most 20 pages of 200). Cached per user for the session.
+   */
+  async findUserRow(userId: string, hints: { email?: string | null; stellar?: string | null } = {}): Promise<{ row: any | null; path: string }> {
+    if (!userId) return { row: null, path: "none" };
+    const hit = this.rowCache.get(userId);
+    if (hit && (hit.row || Date.now() - hit.at < 60_000)) return { row: hit.row, path: hit.path };
+    const idOf = (u: any) => String(u?.id ?? u?.userId ?? u?.user_id ?? "");
+    const remember = (row: any, path: string) => { this.rowCache.set(userId, { row, path, at: Date.now() }); if (row) this.log(`[fiat] users lookup found the row via ${path}`); return { row, path }; };
     try {
-      const r = await fetch(`${this.base}/users?q=${encodeURIComponent(userId)}&filter=with-wallet&limit=20`, { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
-      const p: any = await r.json().catch(() => ({}));
-      if (!r.ok) { this.log(`[fiat] users lookup answered ${r.status} ${String(p.code ?? "")}`); return null; }
-      const c = p.content ?? p;
-      const rows: any[] = Array.isArray(c) ? c : (c.users ?? c.items ?? c.data ?? c.rows ?? []);
-      const me = rows.find((u) => String(u.id ?? u.userId ?? "") === userId) ?? (rows.length === 1 ? rows[0] : null);
-      if (!me) { this.log(`[fiat] users lookup shape (no row for this user): ${JSON.stringify(shapeOf(p))}`); return null; }
-      const w = findSolanaAddress({ wallets: me.wallets, wallet_public_key: me.wallet_public_key, wallet: me.wallet });
-      if (!w) this.log(`[fiat] users lookup row shape (no Solana wallet): ${JSON.stringify(shapeOf(me))}`);
-      return w;
-    } catch { this.log("[fiat] users lookup failed (network)"); return null; }
+      const searches: [string, string | null][] = [["q=id", userId], ["q=email", hints.email ?? null], ["q=stellar", hints.stellar ?? null]];
+      for (const [path, q] of searches) {
+        if (!q) continue;
+        const page = await this.usersPage({ q, limit: "50" });
+        const me = page?.rows.find((u) => idOf(u) === userId);
+        if (me) return remember(me, path);
+      }
+      for (let n = 1; n <= 20; n++) {
+        const page = await this.usersPage({ page: String(n), limit: "200" });
+        if (!page) break;
+        const me = page.rows.find((u) => idOf(u) === userId);
+        if (me) return remember(me, `pages (page ${n})`);
+        if (!page.rows.length || n >= page.totalPages) break;
+      }
+      this.log(`[fiat] users lookup found no row with this id (tried q=id${hints.email ? ", q=email" : ""}${hints.stellar ? ", q=stellar" : ""}, pages)`);
+      return remember(null, "none");
+    } catch { this.log("[fiat] users lookup failed (network)"); return { row: null, path: "none" }; }
+  }
+  /** Kept for callers that only want the address. */
+  async listSolanaWallet(userId: string, hints: { email?: string | null; stellar?: string | null } = {}): Promise<string | null> {
+    const { row } = await this.findUserRow(userId, hints);
+    return row ? findSolanaAddress({ wallets: row.wallets, wallet_public_key: row.wallet_public_key, wallet: row.wallet, solana: row.solana }) : null;
   }
 }
 const toMs = (x: any): number => { if (typeof x === "number") return x < 1e12 ? x * 1000 : x; const t = Date.parse(String(x ?? "")); return Number.isFinite(t) ? t : 0; };
@@ -446,6 +488,7 @@ export function ledgerStore(ledger: FiatLedger): DepositStore {
 /** Integer micro-USD → "5.00", with no float on the way. */
 export function microToUsd(m: bigint | number): string { const n = BigInt(m); const neg = n < 0n; const a = neg ? -n : n; const w = a / 1_000_000n, f = a % 1_000_000n; return `${neg ? "-" : ""}${w}.${(f / 10_000n).toString().padStart(2, "0")}`; }
 /** Per token account owner: post − pre balance (base units) for one mint, from the transaction's token balances. */
+export function tokenDeltasOf(tx: any, mint: string) { return tokenDeltas(tx, mint); }
 function tokenDeltas(tx: any, mint: string): { owner: string; delta: bigint }[] {
   const pre = new Map<number, bigint>(), owners = new Map<number, string>();
   for (const b of tx.meta?.preTokenBalances ?? []) if (b.mint === mint) { pre.set(b.accountIndex, BigInt(b.uiTokenAmount?.amount ?? 0)); if (b.owner) owners.set(b.accountIndex, b.owner); }

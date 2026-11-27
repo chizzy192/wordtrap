@@ -66,13 +66,13 @@ test("verify: the Solana wallet comes from the verify content, else from GET /v3
     const s = await viaUsers.gw.verifySession("t2");
     assert.equal(s.wallet, SOL);
     assert.ok(viaUsers.hits.some((h) => h.startsWith("GET /v3/users?q=usr_1")), "users lookup by id");
-    assert.equal(viaUsers.log.length, 1); assert.ok(viaUsers.log[0].startsWith("[fiat] verify shape (no Solana wallet found): "));
+    assert.ok(viaUsers.log[0].startsWith("[fiat] verify shape (no Solana wallet found): ")); assert.ok(viaUsers.log.includes("[fiat] users lookup found the row via q=id"), "which path found the row is logged");
     const shape = JSON.parse(viaUsers.log[0].slice("[fiat] verify shape (no Solana wallet found): ".length));
     assert.equal(shape.content.wallet, `string(${STELLAR.length})`);
     assert.ok(!viaUsers.log[0].includes(STELLAR) && !viaUsers.log[0].includes("p@example.com") && !viaUsers.log[0].includes("t2") && !viaUsers.log[0].includes(SECRET), "no values in the diagnostic");
   } finally { await viaUsers.close(); }
   const none = await mockPollar({ wallet: STELLAR }, [{ id: "usr_1", wallets: [{ network: "stellar", public_key: STELLAR }] }]);
-  try { assert.equal((await none.gw.verifySession("t3")).wallet, null); assert.ok(none.log.some((l) => l.includes("users lookup row shape"))); } finally { await none.close(); }
+  try { assert.equal((await none.gw.verifySession("t3")).wallet, null); assert.ok(none.log.some((l) => l.includes("but it has no Solana wallet yet"))); } finally { await none.close(); }
 });
 
 /** Mocked RPC with transfers to the treasury's token account. */
@@ -101,14 +101,15 @@ test("no Solana wallet and binding off (the default): a plain sentence, and POST
   try {
     const r = await fetch(`${base}/api/v1/fiat/balance`, { headers: hdr("tok") });
     assert.equal(r.status, 428);
-    assert.equal((await r.json()).error, "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.");
+    assert.equal((await r.json()).error, "We couldn't find your Solana wallet with Pollar. Do the one-time wallet check below to link it.");
     const bind = await fetch(`${base}/api/v1/fiat/wallet`, { method: "POST", headers: hdr("tok"), body: JSON.stringify({ address: SOL }) });
     assert.equal(bind.status, 403);
     assert.equal((await bind.json()).error, "We couldn't find your Solana wallet with Pollar. Sign out and in again, or contact us.");
     assert.equal((await app.players.playerByUser("usr_1"))?.wallet ?? null, null, "nothing bound");
-    // even a binding left in the players store is ignored while the flag is off
+    // a players row is written only by trusted paths (Pollar's own data, or proof of control), so once one exists it counts
     await app.players.upsertPlayer({ userId: "usr_1", wallet: SOL });
-    assert.equal((await fetch(`${base}/api/v1/fiat/balance`, { headers: hdr("tok") })).status, 428);
+    const after = await fetch(`${base}/api/v1/fiat/balance`, { headers: hdr("tok") });
+    assert.equal(after.status, 200); assert.equal((await after.json()).user, SOL);
   } finally { await app.close(); await pol.close(); }
 });
 

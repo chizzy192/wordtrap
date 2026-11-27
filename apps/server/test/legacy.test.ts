@@ -111,7 +111,8 @@ test("LEGACY_TREASURY_ADDRESSES: a finalized transfer to an earlier treasury cre
 
 test("funds page: the treasury is read from the server right before each payment, and the send is refused when it is not configured", () => {
   const app = readFileSync(fileURLToPath(new URL("../../stake/src/App.tsx", import.meta.url)), "utf8");
-  const i = app.indexOf('await fetch(SERVER + "/api/v1/treasury", { cache: "no-store" })'); const j = app.indexOf("await id.sendUsdc(fresh.address");
+  const start = app.indexOf("async function addFunds");
+  const i = app.indexOf('await fetch(SERVER + "/api/v1/treasury", { cache: "no-store" })', start); const j = app.indexOf("await id.sendUsdc(fresh.address", i);
   assert.ok(i > 0 && j > i, "a fresh read precedes the send");
   assert.ok(app.slice(i, j).includes('fresh.withdrawals !== "ready"') && app.slice(i, j).includes("adding funds is paused. Nothing was sent."), "refuses when not configured");
   assert.ok(!app.slice(i, j + 60).includes("treasury.address"), "no cached address on the send path");

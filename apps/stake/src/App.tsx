@@ -16,7 +16,7 @@ const CHIPS = [1, 2, 5, 10];
 
 interface Treasury { setter: string; pubkeyHex: string; chain: string; mode: string; address?: string; usdcMint?: string; network?: string; guestStartFunds?: number }
 const RETURN_TO = (() => { const r = new URLSearchParams(location.search).get("return") ?? ""; return /^\/[^/\\]/.test(r) ? r : ""; })();   // same-origin path only
-/** ?demo=signedout|empty|funded overlays presentation fixtures so every state can be reviewed and tested without a Pollar session. */
+/** ?demo=signedout|empty|funded overlays presentation fixtures so every state can be reviewed and tested without a Pollar session; &ready=0 adds the "server cannot credit this wallet" state. */
 const DEMO = new URLSearchParams(location.search).get("demo");
 
 // ---- identity (I6): shared with the plain pages (/identity.js): "guest-" + 8 random characters, made once ----
@@ -138,23 +138,6 @@ export function useIdentity(mode: Mode) {
     if (mode === "demo" && user) h["x-user"] = user;
     return h;
   }, [mode, token, user]);
-  // Last resort: when Pollar's server side gives our server no Solana address (428), send the one the SDK shows. The
-  // server binds it to the verified Pollar user once; it trusts this claim only for identity, never for crediting
-  // (deposits still need the on-chain sender to equal the bound address).
-  const [walletBound, setWalletBound] = useState<string | null>(null);
-  useEffect(() => {
-    if (mode !== "pollar" || !token || !solAddress) return;
-    (async () => {
-      try {
-        const r = await fetch(SERVER + "/api/v1/fiat/balance", { headers: { authorization: `Bearer ${token}` } });
-        if (r.status !== 428) return;
-        const b = await fetch(SERVER + "/api/v1/fiat/wallet", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify({ address: solAddress }) });
-        const j = await b.json().catch(() => ({}));
-        if (b.ok) setWalletBound(j.wallet); else setPollarErr(friendly(j.error));
-      } catch { /* offline */ }
-    })();
-  }, [mode, token, solAddress]);
-
   /** USDC to the game treasury through the SDK's payment call (embedded wallets); returns the SubmitOutcome (`hash` = signature). */
   const sendUsdc = useCallback((destination: string, micro: number, mint: string): Promise<SubmitOutcome> => {
     if (!p) return Promise.reject(new Error("Pollar wallet unavailable"));
@@ -166,7 +149,7 @@ export function useIdentity(mode: Mode) {
     signOut: () => { p?.logout(); try { localStorage.removeItem("wt.session.token"); localStorage.removeItem(ID_KEY); localStorage.removeItem(MODE_KEY); } catch { /* private */ } },
     usdc, walletStep: p?.walletBalance.step ?? "idle", refreshWallet, sendUsdc,
     txHistory: (p?.txHistory ?? { step: "idle" }) as TxHistoryState, loadHistory, openTxHistory: () => p?.openTxHistoryModal(),
-    openWallet: () => p?.openWalletBalanceModal(), openSend: () => p?.openSendModal(), walletBound };
+    openWallet: () => p?.openWalletBalanceModal(), openSend: () => p?.openSendModal(), solAddress };
 }
 
 /**
@@ -259,6 +242,9 @@ export function App({ mode }: { mode: Mode }) {
   const [, forceRender] = useState(0);
   const pollRef = useRef<number>(0);
   const [pending, setPending] = useState<{ signature: string; amount: number }[]>([]);
+  // Readiness: the server says whether it can credit a payment from the wallet the SDK will pay from. Nothing is sent otherwise.
+  const [ready, setReady] = useState<{ ready: boolean; reason: string; link: boolean; checked: boolean }>({ ready: false, reason: "", link: false, checked: false });
+  const [link, setLink] = useState<{ step: "idle" | "starting" | "ready" | "paying" | "confirming" | "done" | "refused"; amountMicro: number; amountText: string; wording: string; text: string }>({ step: "idle", amountMicro: 0, amountText: "", wording: "", text: "" });
   const [cashout, setCashout] = useState<{ open: boolean; amount: string; step: "idle" | "sending" | "sent" | "pending" | "refunded" | "refused"; text: string }>({ open: false, amount: "", step: "idle", text: "" });
   const [checking, setChecking] = useState<{ busy: boolean; text: string }>({ busy: false, text: "" });
 
@@ -274,6 +260,19 @@ export function App({ mode }: { mode: Mode }) {
     await id.refreshWallet();
     if (mode === "pollar") id.loadHistory();
   }, [api, id.user, id.refreshWallet, id.loadHistory, mode]);
+  /** GET /api/v1/fiat/ready for the address the SDK would pay from. Called on sign-in and again right before a send. */
+  const checkReady = useCallback(async (paying: string): Promise<{ ready: boolean; reason: string; link: boolean }> => {
+    if (mode !== "pollar") return { ready: true, reason: "", link: false };
+    if (DEMO) {   // review fixtures: ?ready=0 shows the not-ready state without a session
+      return new URLSearchParams(location.search).get("ready") === "0" ? { ready: false, link: true, reason: "We couldn't find your Solana wallet with Pollar. Do the one-time wallet check below to link it." } : { ready: true, reason: "", link: false };
+    }
+    try {
+      const r = await fetch(SERVER + "/api/v1/fiat/ready?address=" + encodeURIComponent(paying), { headers: id.token ? { authorization: `Bearer ${id.token}` } : {}, cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 200 && typeof j.ready === "boolean") return { ready: j.ready, reason: j.ready ? "" : friendly(j.reason, "Payments are paused. Try again in a minute."), link: !!j.link };
+      return { ready: false, reason: friendly(j.reason ?? j.error, "Sign in to add funds."), link: false };
+    } catch { return { ready: false, reason: "The server didn't answer. Try again in a moment.", link: false }; }
+  }, [mode, id.token]);
   useEffect(() => { fetch(SERVER + "/api/v1/treasury").then((r) => r.json()).then(setTreasury).catch(() => setTreasury(null)); }, []);
   useEffect(() => { refreshBalance(); }, [refreshBalance]);
 
@@ -336,7 +335,9 @@ export function App({ mode }: { mode: Mode }) {
   const live = demo && demo.signedIn ? demo.run : run;
   const amt = showCustom && custom.trim() !== "" ? Number(custom) : amount;
   const walletEmpty = mode === "pollar" && usdc !== null && usdc < amt;
-  const canAdd = signedIn && amt > 0 && funding.step !== "confirming" && !walletEmpty && !(mode === "pollar" && !treasury?.address);
+  const paying = demo && demo.signedIn ? demo.address : id.solAddress;
+  useEffect(() => { if (!signedIn) return; let alive = true; checkReady(paying).then((r) => { if (alive) setReady({ ...r, checked: true }); }); return () => { alive = false; }; }, [signedIn, paying, checkReady, link.step === "done"]);
+  const canAdd = signedIn && amt > 0 && funding.step !== "confirming" && !walletEmpty && !(mode === "pollar" && !treasury?.address) && (mode !== "pollar" || ready.ready);
   const creditedSigs = useMemo(() => new Set<string>([...(balance?.deposits ?? []), ...(balance?.history ?? []).filter((h: any) => (h.reason === "pollar payment" || h.reason === "deposit") && h.ref).map((h: any) => String(h.ref))].map(String)), [balance]);
   const rows: Row[] = demo && demo.signedIn ? [...demo.rows] : (id.txHistory.step === "loaded" ? id.txHistory.data.records.map((r: any) => rowOf(r, treasury?.address, creditedSigs)) : []);
   const confirming = funding.step === "confirming" || pending.length > 0;
@@ -359,6 +360,36 @@ export function App({ mode }: { mode: Mode }) {
       refreshBalance();
     } catch (e: any) { setCashout((c) => ({ ...c, step: "refused", text: friendly(e.message) })); }
   }
+  /** One-time wallet check: the server names an exact amount; the user pays it from the wallet they claim; the server
+   *  links the address only when that exact, finalized payment arrives from it, then credits it as a deposit. */
+  async function startLink() {
+    setLink((l) => ({ ...l, step: "starting", text: "" }));
+    try {
+      const r = await api("/api/v1/fiat/link/start", {});
+      if (r.linked) { setLink((l) => ({ ...l, step: "done", text: "Your wallet is already known." })); return; }
+      setLink({ step: "ready", amountMicro: r.amountMicro, amountText: r.amountText, wording: r.wording, text: "" });
+    } catch (e: any) { setLink((l) => ({ ...l, step: "refused", text: friendly(e.message) })); }
+  }
+  async function payLink() {
+    if (!link.amountMicro) return;
+    setLink((l) => ({ ...l, step: "paying", text: `Sending $${l.amountText} USDC…` }));
+    try {
+      const fresh: Treasury = await fetch(SERVER + "/api/v1/treasury", { cache: "no-store" }).then((r) => r.json());
+      if (!fresh.address || !fresh.usdcMint) throw new Error("The server has no treasury address or USDC mint for this network yet.");
+      const out = await id.sendUsdc(fresh.address, link.amountMicro, fresh.usdcMint);
+      if (out.status === "error") throw new Error(friendly((out as any).details ?? (out as any).message, "The payment was not sent."));
+      if (out.status === "cosign_pending") throw new Error("The payment is waiting for another device's approval.");
+      setLink((l) => ({ ...l, step: "confirming", text: "Confirming your payment…" }));
+      for (let i = 0; i < 60; i++) {
+        const res = await fetch(SERVER + "/api/v1/fiat/link/confirm", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${id.token}` }, body: JSON.stringify({ signature: out.hash, address: id.solAddress }) });
+        const j = await res.json().catch(() => ({}));
+        if (res.status === 200) { setLink((l) => ({ ...l, step: "done", text: `Wallet linked. Added $${(j.credited / 1e6).toFixed(2)} to your game balance.` })); await refreshBalance(); return; }
+        if (res.status !== 202) throw new Error(friendly(j.reason ?? j.error));
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      setLink((l) => ({ ...l, step: "refused", text: "Solana has not finalized that payment yet. Try the check again in a minute." }));
+    } catch (e: any) { setLink((l) => ({ ...l, step: "refused", text: friendly(e.message) })); }
+  }
   /** Add funds: USDC from the Pollar wallet to the treasury (sendPayment), then the server confirms it on Solana. */
   async function addFunds() {
     if (!canAdd) return;
@@ -370,6 +401,10 @@ export function App({ mode }: { mode: Mode }) {
         setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` });
         await refreshBalance(); return;
       }
+      // never send before the server can credit: readiness is asked again right now, for the wallet the SDK pays from
+      const gate = await checkReady(paying);
+      setReady({ ...gate, checked: true });
+      if (!gate.ready) throw new Error(gate.reason || "Payments are paused. Nothing was sent.");
       // the destination is read from the server right now, never from an earlier load
       const fresh: Treasury & { withdrawals?: string } = await fetch(SERVER + "/api/v1/treasury", { cache: "no-store" }).then((r) => r.json());
       setTreasury(fresh);
@@ -458,6 +493,21 @@ export function App({ mode }: { mode: Mode }) {
           <p className="sentence">Move USDC from your Pollar wallet into the game to play.</p>
           <hr className="divider" />
           <h2 id="addh">Add funds</h2>
+          {mode === "pollar" && ready.checked && !ready.ready && !ready.link && <p className="notice err" role="alert" data-wt="not-ready">{ready.reason}</p>}
+          {mode === "pollar" && ready.checked && ready.link && link.step !== "done" && (
+            <div className="notice" role="group" aria-label="One-time wallet check" data-wt="link">
+              <p>{ready.reason}</p>
+              {link.step === "idle" || link.step === "starting" || link.step === "refused"
+                ? <button type="button" className="btn blue" disabled={link.step === "starting"} onClick={startLink}>Start the wallet check</button>
+                : <>
+                    <p><b>{link.wording}</b></p>
+                    {(link.step === "ready") && <button type="button" className="btn blue" disabled={walletEmpty} onClick={payLink}>Confirm ${link.amountText}</button>}
+                    {(link.step === "paying" || link.step === "confirming") && <div className="status" role="status">{link.text}<div className="progress" aria-hidden="true"></div></div>}
+                  </>}
+              {link.step === "refused" && <p className="status err" role="alert">{link.text}</p>}
+            </div>
+          )}
+          {link.step === "done" && <p className="status ok" role="status">{link.text}</p>}
           {walletEmpty && <p className="notice" role="status">Your Pollar wallet is empty. <a href={FAUCET} target="_blank" rel="noreferrer">Get test USDC</a> (devnet test money), then come back.</p>}
           <div className="chips" role="group" aria-label="Amount">
             {CHIPS.map((v) => <button key={v} type="button" className={`chip${!showCustom && amount === v ? " on" : ""}`} aria-pressed={!showCustom && amount === v} onClick={() => { setAmount(v); setShowCustom(false); }}>${v}</button>)}
