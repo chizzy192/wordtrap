@@ -163,6 +163,16 @@ export class FiatLedger {
     this.save();
   }
   backersOf(runId: string): Record<string, number> { return this.d.backers[runId] ?? {}; }
+  /** What this ledger holds about one run (saved beside the run so a restart keeps mine owners and backers). */
+  dumpRun(runId: string) { return { traps: Object.fromEntries(this.trapsIn(runId).map(({ trapId, ...t }) => [trapId, t])), backers: { ...this.backersOf(runId) }, settled: this.d.settled[runId] ?? null }; }
+  /** Merge a saved slice back: what this ledger already knows wins (it may be newer, a paid mine say). */
+  restoreRun(runId: string, d: any) {
+    if (!d) return;
+    for (const [id, t] of Object.entries(d.traps ?? {})) if (!this.d.traps[id]) this.d.traps[id] = t as TrapOwnership;
+    if (!this.d.backers[runId] && d.backers && Object.keys(d.backers).length) this.d.backers[runId] = { ...d.backers };
+    if (!this.d.settled[runId] && d.settled) this.d.settled[runId] = d.settled;
+    this.save();
+  }
   /** Split the treasury's on-chain backer payout among the fiat backers of a run, pro-rata, once. Returns each
    *  backer's share; the money moves through each backer's MoneyStore (kind payout, ref runId:payout:user). */
   settleBackers(runId: string, treasuryPayoutMicro: number): Record<string, number> {
@@ -213,6 +223,8 @@ export interface PollarSession {
   /** Unix ms when the token stops being valid. */
   expiresAt: number;
   authProvider?: string;
+  /** The name Pollar's profile carries (Google's display name), when any. */
+  name?: string;
 }
 export interface PollarGateway {
   readonly kind: "mock" | "pollar";
@@ -339,7 +351,8 @@ export class PollarServerApi implements PollarGateway {
       }
     }
     const expiresAt = toMs(c.expiresAt);
-    const s: PollarSession = { userId, wallet, network: String(c.network ?? ""), expiresAt, authProvider: c.authProvider ? String(c.authProvider) : undefined, fresh: true, lookup };
+    const name = String(c.profile?.name ?? c.profile?.displayName ?? c.profile?.display_name ?? c.name ?? "").trim() || undefined;
+    const s: PollarSession = { userId, wallet, network: String(c.network ?? ""), expiresAt, authProvider: c.authProvider ? String(c.authProvider) : undefined, fresh: true, lookup, name };
     if (expiresAt > Date.now()) this.cache.set(token, { ...s, fresh: false });
     if (this.cache.size > 5000) for (const [k, v] of this.cache) if (v.expiresAt <= Date.now()) this.cache.delete(k);
     return s;

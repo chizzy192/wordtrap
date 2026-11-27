@@ -42,6 +42,8 @@ export class InvalidActionError extends Error {
 
 export interface ActParams { word?: string; turn?: number }
 
+export interface MatchDump { state: BoardState; tiles: Tile[]; cfg: MatchConfig; seed: number; fired: string[]; burnedWords: string[]; tileFired: number; windowArmed: { count: number; stake: number }; bonusesPaid: number; planned: [number, { hand: string[]; safe: string | null }][] }
+
 export class Match extends EventEmitter {
   readonly state: BoardState;
   readonly tiles: Tile[];
@@ -65,14 +67,14 @@ export class Match extends EventEmitter {
   private readonly extraBackers: () => number;
   private bonusesPaid = 0;
 
-  constructor(o: { matchId: string; callsign?: string; chain: Chain; wallet: AgentWallet; oracleUrl: string; cfg?: Partial<MatchConfig>; seed?: number; deck?: Tile[]; deckMeta?: { theme: string; sourceUrl: string; site: string; day: string }; extraBackers?: () => number }) {
+  constructor(o: { matchId: string; callsign?: string; chain: Chain; wallet: AgentWallet; oracleUrl: string; cfg?: Partial<MatchConfig>; seed?: number; deck?: Tile[]; deckMeta?: { theme: string; sourceUrl: string; site: string; day: string }; extraBackers?: () => number; restore?: MatchDump }) {
     super();
-    this.cfg = { ...DEFAULTS, ...o.cfg };
+    this.cfg = { ...DEFAULTS, ...(o.restore?.cfg ?? o.cfg) };
     this.chain = o.chain; this.wallet = o.wallet; this.oracleUrl = o.oracleUrl;
     this.extraBackers = o.extraBackers ?? (() => 0);
-    this.seed = o.seed ?? (Date.now() >>> 0);
-    this.tiles = o.deck ? o.deck.slice(0, this.cfg.tiles) : dealTiles(this.cfg.tiles, this.seed);
-    this.state = {
+    this.seed = o.restore?.seed ?? o.seed ?? (Date.now() >>> 0);
+    this.tiles = o.restore ? o.restore.tiles : o.deck ? o.deck.slice(0, this.cfg.tiles) : dealTiles(this.cfg.tiles, this.seed);
+    this.state = o.restore ? structuredClone(o.restore.state) : {
       matchId: o.matchId, callsign: o.callsign, deck: o.deckMeta, treasury: toHex(this.chain.treasury().pubkey), status: "live", turn: 0, position: 0,
       tiles: this.tiles.map((t) => ({ prompt: t.prompt, cleared: false, needed: t.needed, played: [] })),
       hand: [], safe: null, safeCard: null, shielded: false, nextHand: null, nextSafeCard: null, nextPrompt: null, laterHand: null, fuse: this.cfg.fuse, fuseTotal: this.cfg.fuse, hint: null,
@@ -80,7 +82,12 @@ export class Match extends EventEmitter {
       defusesLeft: this.cfg.maxDefuses, hintsBought: 0, hintSpendUsd: 0, score: 0,
       backingOpen: true, backerCount: 0, bonusesPaid: 0, unfiredStake: 0, poolNow: 0,
     };
-    this.dealHand();
+    if (o.restore) {
+      const r = o.restore;
+      this.fired = new Set(r.fired); this.burnedWords = new Set(r.burnedWords); this.tileFired = r.tileFired;
+      this.windowArmed = { ...r.windowArmed }; this.bonusesPaid = r.bonusesPaid;
+      for (const [pos, plan] of r.planned) this.planned.set(Number(pos), { hand: [...plan.hand], safe: plan.safe });
+    } else this.dealHand();
     this.chain.onTrapPlanted((t) => {
       this.windowArmed.count++; this.windowArmed.stake += t.stake;
       this.sync(); this.push({ type: "trap_planted", trap: t });
@@ -103,6 +110,11 @@ export class Match extends EventEmitter {
 
   /** A copy of the full state. Safe to hand to HTTP callers: mutating it changes nothing here. */
   snapshot(): BoardState { return structuredClone(this.state); }
+  /** Everything a restart needs to continue this match (the chain and the room are dumped by their owners). */
+  dump(): MatchDump {
+    return { state: this.snapshot(), tiles: structuredClone(this.tiles), cfg: { ...this.cfg }, seed: this.seed, fired: [...this.fired], burnedWords: [...this.burnedWords],
+      tileFired: this.tileFired, windowArmed: { ...this.windowArmed }, bonusesPaid: this.bonusesPaid, planned: [...this.planned].map(([p, plan]) => [p, { hand: [...plan.hand], safe: plan.safe }]) };
+  }
 
   riskContext(): RiskContext {
     return { tile: this.currentTile(), firedWords: this.fired, armedStakeThisWindow: this.windowArmed.stake, armedCountThisWindow: this.windowArmed.count };
@@ -246,7 +258,7 @@ export class Match extends EventEmitter {
   }
 
   /** Hands are planned ahead so viewers can mine the next tiles; the plan is what gets dealt. */
-  private readonly planned = new Map<number, { hand: string[]; safe: string | null }>();
+  private readonly planned = new Map<number, { hand: string[]; safe: string | null }>();   // filled by planHand, or by a restore
   planHand(position: number): { prompt: string; hand: string[]; safe: string | null } | null {
     if (position < 0 || position >= this.tiles.length) return null;
     const tile = this.tiles[position];

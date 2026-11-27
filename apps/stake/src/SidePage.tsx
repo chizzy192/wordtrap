@@ -66,6 +66,7 @@ export function Side({ mode }: { mode: Mode }) {
   const [, forceRender] = useState(0);
   const signedIn = !!id.user;
   const balMicro = balance ? (balance.balanceMicro as number) : 0;
+  useEffect(() => { if (signedIn && pop === "first") setPop(null); }, [signedIn]);   // a signed-in player is never asked to sign in
 
   const api = useCallback(async (path: string, body?: unknown) => {
     const r = await fetch(SERVER + path, body === undefined ? { headers: id.headers() } : { method: "POST", headers: id.headers(), body: JSON.stringify({ ...(body as object), ...(mode === "demo" ? { user: id.user } : {}) }) });
@@ -148,7 +149,6 @@ export function Side({ mode }: { mode: Mode }) {
   async function back() {
     if (!runId) return;
     if (!signedIn) { pending.current = "back"; return setPop("first"); }
-    if (!id.displayName) { pending.current = "back"; return setPop("name"); }
     if (!(amt > 0)) { setMsg("Choose an amount first."); return; }
     if (needFunds) { pending.current = "back"; return setPop("funds"); }
     setBusy(true); setMsg("");
@@ -159,7 +159,6 @@ export function Side({ mode }: { mode: Mode }) {
   async function takeSeat() {
     if (!runId) return;
     if (!signedIn) { pending.current = "seat"; return setPop("first"); }
-    if (!id.displayName) { pending.current = "seat"; return setPop("name"); }
     setBusy(true);
     try {
       const r = await fetch(`${SERVER}/runs/${runId}/seat`, { method: "POST", headers: id.headers(), body: JSON.stringify({ action: "take", ...(mode === "demo" ? { user: id.user } : {}) }) });
@@ -196,7 +195,7 @@ export function Side({ mode }: { mode: Mode }) {
           <span className="livewrap"><span className={`dot${live ? "" : " off"}`} role="img" aria-label={live ? "live" : "over"}></span>{live ? "Live" : state ? "Over" : "Waiting"}</span>
           <span className="account">
             {signedIn
-              ? <><span className="who" title={id.user}>{id.label}</span><span className="bal">{usd(balMicro / 1e6)}<small>{fundsKind}</small></span>{mode === "pollar" && <span className="bal"><span>{id.usdc === null ? "…" : usd(id.usdc)}</span><small>Wallet USDC</small></span>}<button type="button" className="btn small yellow" onClick={() => setPop("funds")}>Add funds</button></>
+              ? <><span className="who" title={id.user}>{id.label}</span><button type="button" className="btn text" onClick={() => { setNameDraft(id.displayName || ""); setNameMsg(""); setPop("name"); }}>Change name</button><span className="bal">{usd(balMicro / 1e6)}<small>{fundsKind}</small></span>{mode === "pollar" && <span className="bal"><span>{id.usdc === null ? "…" : usd(id.usdc)}</span><small>Wallet USDC</small></span>}<button type="button" className="btn small yellow" onClick={() => setPop("funds")}>Add funds</button></>
               : <button type="button" className="btn small" onClick={() => setPop("first")}>Sign in</button>}
           </span>
           <button id="themeBtn" type="button" aria-pressed={dark} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} onClick={toggleTheme}>
@@ -248,10 +247,13 @@ export function Side({ mode }: { mode: Mode }) {
                   <hr />
                   <p>If the run ended now you would get <b className="bluetext">{usd(pos.payoutNowUsd)}</b></p>
                 </div>
+                <a className="btn yellow wide" href={`/watch/${encodeURIComponent(runId ?? "")}`} data-wt="watch-run">Watch the run</a>
                 {state?.backingOpen
                   ? <div className="row"><button className="btn blue" disabled={busy} onClick={back}>{needFunds ? "Add funds to play" : `Add ${money(amt)} more`}</button><span className="soft">Wallet balance {usd(balMicro / 1e6)}</span></div>
                   : <p className="closedline">{pos.backingClosed ?? "Backing closed when Byte cleared the first tile."}</p>}
               </>
+            ) : pos?.cannotBack ? (
+              <p className="closedline" data-wt="no-back">{pos.cannotBack}</p>
             ) : state?.backingOpen === false ? (
               <p className="closedline">{pos?.backingClosed ?? "Backing closed when Byte cleared the first tile."}</p>
             ) : !signedIn ? (
@@ -287,9 +289,11 @@ export function Side({ mode }: { mode: Mode }) {
               <li>A mine that goes off pays <b>{MULTIPLIER} times</b> its stake</li>
               <li>Smallest stake is <b>{usd(MIN_STAKE)}</b></li>
             </ul>
-            {free > 0
-              ? <button className="btn yellow wide" disabled={busy} onClick={takeSeat}>{signedIn ? "Take a seat" : "Sign in to play"}</button>
-              : <p className="closedline">Seats are full. You can still back Byte.</p>}
+            {pos?.cannotSeat
+              ? <p className="closedline" data-wt="no-seat">{pos.cannotSeat}</p>
+              : free > 0
+                ? <button className="btn yellow wide" disabled={busy} onClick={takeSeat}>{signedIn ? "Take a seat" : "Sign in to play"}</button>
+                : <p className="closedline">Seats are full. You can still back Byte.</p>}
           </section>
         </main>
       )}

@@ -112,6 +112,39 @@ VITE_POLLAR_PUBLISHABLE_KEY=pub_testnet_... npm run build -w apps/stake   # Poll
 POLLAR_SECRET_KEY=sec_testnet_... RPC_URL=https://api.devnet.solana.com npm run dev   # server verifies tokens with Pollar and USDC payments on Solana; otherwise demo credits
 ```
 
+### Runs survive a restart (Supabase table `runs`)
+
+With `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` set, every run is saved write-behind (coalesced, retried, flushed on
+SIGTERM) and every run updated in the last two hours is restored on startup with the same runId, turn and API key.
+Create the table once (RLS on; no policies, so only the service role the server uses can read or write it):
+
+```sql
+create table if not exists public.runs (
+  run_id     text primary key,
+  status     text not null,          -- live | escaped | dead
+  state      jsonb not null,         -- match, chain, room, feed, cursor, ledger slices (apps/server/src/runs.ts RunDump)
+  updated_at timestamptz not null default now()
+);
+create index if not exists runs_updated_at_idx on public.runs (updated_at desc);
+alter table public.runs enable row level security;
+```
+
+Browser test for the board and the side page (backer view, one side per run, zero name prompts), against the same mock server:
+
+```bash
+node scripts/browser-watch.mjs http://127.0.0.1:8808 http://127.0.0.1:8809 docs/design_reference/captures/watch
+```
+
+Browser test for the funds page (headless Chrome; Parts A–C need a build with any `VITE_POLLAR_PUBLISHABLE_KEY`, Part D
+also `VITE_WT_MOCK_POLLAR=1` and the mock server, which credits a top-up 8 s after it was sent):
+
+```bash
+VITE_POLLAR_PUBLISHABLE_KEY=pub_testnet_x VITE_WT_MOCK_POLLAR=1 npm run build -w apps/stake
+node scripts/stake-mock-server.ts 8808 &        # game server :8808 with a mocked Pollar, mock chain :8809
+node scripts/browser-stake.mjs http://127.0.0.1:8808 docs/design_reference/captures/stake http://127.0.0.1:8809
+npm run stake:build                              # then rebuild without the test flags
+```
+
 Without keys the page runs in **demo-credit mode**: `POST /dev/credit` funds a balance (mock chain only),
 and the rest of the flow is identical. Manual walkthrough: add funds on `/stake/` → take a seat and plant from the
 board (`/watch/<id>`) → Byte plays the card → the board reveals it → payout lands in the balance.

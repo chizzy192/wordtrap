@@ -21,6 +21,7 @@ import { startCrowd, crowdFromEnv, type CrowdOptions } from "./crowd.ts";
 import { decide } from "./driver.ts";
 import { FiatLedger, FiatError, MockPollar, JsonRpc, GENESIS, USDC_MINTS, base58, isSolanaAddress, confirmPayment, confirmUsdcPayment, reconcileDeposits, pollarFromEnv, toMicro, fromMicro, microToUsd, MICRO, type PollarGateway, type PollarSession, type SolanaRpc } from "./fiat.ts";
 import { MemoryMoneyStore, SupabaseMoneyStore, bindWallet, refundOrphans, migrateLedger, type MoneyStore, type SupabaseLike } from "./store.ts";
+import { SupabaseRunStore, type RunStore } from "./persist.ts";
 import { SolanaTreasury, type TreasuryWallet } from "./treasury.ts";
 import { Withdrawals } from "./withdrawals.ts";
 import { WalletLinks } from "./links.ts";
@@ -49,6 +50,16 @@ export function installProcessGuards(log: (...a: unknown[]) => void = console.er
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, OPTIONS" };
 
 const ACTION_ROUTES: Record<string, string> = { play: "play_word", hint: "buy_hint", defuse: "defuse_tile", challenge: "challenge_word", pass: "pass_turn" };
+/** One side per run: a backer never takes a seat in that run, a seated player never backs it. */
+export const BACKER_NO_SEAT = "You backed Byte in this run, so you can't take a seat here. One side per run.";
+export const SEATED_NO_BACK = "You have a seat in this run, so you can't back Byte here. One side per run.";
+/** A profile name (Google) as a display name: letters, digits, spaces and underscores, 16 characters at most. */
+export function nameFromProfile(raw: string | undefined): string {
+  const s = String(raw ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9 _]/g, " ").replace(/\s+/g, " ").trim();
+  if (s.length <= 16) return s;
+  const first = s.split(" ")[0];
+  return first.length >= 2 ? first.slice(0, 16) : s.slice(0, 16).trim();
+}
 
 export interface AppOptions {
   /** Attach simulated viewers to every run (mock chain only). `sim` implies it. */
@@ -103,9 +114,11 @@ export interface AppOptions {
   bots?: boolean;
   /** Pace of the house Byte in rooms started from the lobby (ms between moves). Default 2500. */
   houseDelayMs?: number;
+  /** Where runs are saved so they survive a restart. Default: Supabase table `runs` when Supabase is configured, else none. */
+  runStore?: RunStore | null;
 }
 
-export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; store: MoneyStore | null; players: MoneyStore; withdrawals: Withdrawals; port(): number; listen(port: number): Promise<number>; close(): Promise<void>; startup(): Promise<{ refunds: { user: string; micro: number; ref: string }[]; migrated: { deposits: number; balances: number } | null }> }
+export interface App { server: Server; runs: RunManager; ledger: FiatLedger; pollar: PollarGateway; store: MoneyStore | null; players: MoneyStore; withdrawals: Withdrawals; port(): number; listen(port: number): Promise<number>; close(): Promise<void>; flush(): Promise<void>; startup(): Promise<{ refunds: { user: string; micro: number; ref: string }[]; migrated: { deposits: number; balances: number } | null; restored: string[] }> }
 const LEDGER_DEFAULT = fileURLToPath(new URL("../../../data/fiat-ledger.json", import.meta.url));
 /** Whether apps/stake was built with VITE_POLLAR_PUBLISHABLE_KEY: its index.html carries <meta name="wt-pollar" content="configured|missing">. */
 async function stakeBuildPollar(): Promise<"configured" | "missing" | "not built"> {
@@ -197,11 +210,21 @@ export function createApp(o: AppOptions = {}): App {
   // "Start a room" from the lobby: a run played by the house Byte (the local driver over this same API). Capped.
   const HOUSE_MAX = 3, houseDelayMs = o.houseDelayMs ?? 2500, houseRuns = new Set<string>();
   const houseStop = new AbortController();                      // app.close() stops every house Byte
+  const houseResume: Run[] = [];                                // restored rooms the house Byte must pick up again
+  /** The house Byte plays (or resumes) a run through this same API; the run is saved like any other. */
+  function playHouse(run: Run) {
+    houseRuns.add(run.id);
+    playRunOverHttp(`http://127.0.0.1:${port}`, { callsign: "House Byte", delayMs: houseDelayMs, existing: { runId: run.id, apiKey: run.key, state: run.match.snapshot() }, signal: houseStop.signal })
+      .catch((e) => console.warn(`[rooms] house Byte stopped in ${run.id}:`, (e as Error).message))
+      .finally(() => houseRuns.delete(run.id));
+  }
   const nameCache = new Map<string, string>();        // address -> display name, filled as profiles are read or written
   // Daily decks from the web (Firecrawl → validated tiles → Supabase or memory), refreshed lazily when a run starts.
   const firecrawl: FirecrawlLike | null = o.firecrawl === undefined ? (process.env.FIRECRAWL_API_KEY ? new FirecrawlClient(process.env.FIRECRAWL_API_KEY) : null) : o.firecrawl;
   const decks = new DeckManager({ sources: o.deckSources ?? loadSources(), store: o.deckStore ?? (supa ? new SupabaseDeckStore(supa.db) : new MemoryDeckStore()), firecrawl, log: console.log, today: o.deckToday });
   const adminToken = o.adminToken === undefined ? (process.env.ADMIN_TOKEN || null) : o.adminToken;
+  // Runs survive a restart: saved write-behind to Supabase (table runs) when it is configured; memory only otherwise.
+  const runStore: RunStore | null = o.runStore === undefined ? (supa ? new SupabaseRunStore(supa.db) : null) : o.runStore;
   const runs = new RunManager({
     makeChain,
     cfg: o.cfg,
@@ -209,6 +232,18 @@ export function createApp(o: AppOptions = {}): App {
     extraBackers: (id) => Object.keys(ledger.backersOf(id)).length,
     bots: o.bots ?? crowdOn,
     nameOf: (a) => nameCache.get(a) ?? shortAddress(a),
+    store: runStore,
+    log: console.warn,
+    loadChain: (d) => (d?.kind === "mock" ? MockChain.load(d) : null),   // a run on a real cluster is not rebuilt from a dump
+    // beside the run: this ledger's mine owners, backers and settlement, the plant/back refs, and whether the house Byte plays it
+    extraDump: (run) => ({ ledger: ledger.dumpRun(run.id), planted: [...planted].filter(([ref]) => ref.startsWith(`${run.id}:`)), backCount: [...backCount].filter(([k]) => k.startsWith(`${run.id}:`)), house: houseRuns.has(run.id) }),
+    extraLoad: (run, x) => {
+      if (!x) return;
+      ledger.restoreRun(run.id, x.ledger);
+      for (const [ref, trap] of x.planted ?? []) if (!planted.has(ref)) planted.set(ref, trap);
+      for (const [k, n] of x.backCount ?? []) if (!backCount.has(k)) backCount.set(k, Number(n));
+      if (x.house && !run.match.finished()) houseResume.push(run);   // the driver continues once the server listens
+    },
     pickDeck: async () => { const d = await decks.pickForRun(); return d ? { tiles: playable(d), meta: { theme: d.theme, sourceUrl: d.sourceUrl, site: d.site, day: d.day } } : null; },
     onRun: (run: Run) => {
       // Fiat mines: when the treasury's trap fires, pay the viewer who owns it (idempotent per trap).
@@ -240,6 +275,11 @@ export function createApp(o: AppOptions = {}): App {
       try { await storeFor(job.user).applyDelta(job.user, job.delta, job.kind, job.ref); ledger.dequeue(job.ref); }
       catch (e) { console.warn(`[fiat] ${job.kind} ${job.ref} still queued:`, (e as Error).message); }
     }
+    for (const id of runs.evictFinished()) {   // it stays in the store for the same two hours; the per-run maps go with it
+      console.log(`[runs] ${id} left memory two hours after it ended`);
+      for (const k of [...planted.keys()]) if (k.startsWith(`${id}:`)) planted.delete(k);
+      for (const k of [...backCount.keys()]) if (k.startsWith(`${id}:`)) backCount.delete(k);
+    }
   }, 30_000);
   retry.unref();
 
@@ -259,8 +299,17 @@ export function createApp(o: AppOptions = {}): App {
     // a wallet linked by proof of control (or earlier Pollar data) lives in players; the client-claim path only with the flag
     if (!s.wallet) { const linked = (await players.playerByUser(s.userId).catch(() => null))?.wallet ?? null; if (linked) { s.wallet = linked; s.lookup = "linked"; } }
     if (!s.wallet && !o.allowUnbound) throw new FiatError(allowClientWalletBinding ? "We could not read your Solana wallet from Pollar. Open the funds page so it can send your wallet address." : NO_WALLET_LINK, 428);
-    if (s.fresh && s.wallet) { players.upsertPlayer({ userId: s.userId, wallet: s.wallet }).catch(() => {}); reconcileSoon(s); }
+    if (s.fresh && s.wallet) { players.upsertPlayer({ userId: s.userId, wallet: s.wallet }).catch(() => {}); reconcileSoon(s); void adoptName(s); }
     return s;
+  }
+  /** The name Pollar's profile carries (Google) becomes the player's display name when they never set one. */
+  async function adoptName(s: PollarSession) {
+    const v = validateName(nameFromProfile(s.name)); if (!v.ok || !s.wallet) return;
+    try {
+      if (supa) { const cur = await supa.player(s.wallet); if (cur?.name) return; await supa.upsertPlayer({ userId: s.userId, wallet: s.wallet, name: v.name }); }
+      else { if ((await profiles.get(s.wallet))?.name) return; await profiles.put(s.wallet, v.name); }
+      nameCache.set(s.wallet, v.name);
+    } catch { /* the next sign-in tries again */ }
   }
   const links = new WalletLinks({ rpc, cfg: () => usdcCfg(), players, storeFor, log: console.log, now: o.linkNow, random: o.linkRandom });
   async function whoIs(req: IncomingMessage, body: Record<string, any>): Promise<{ id: string; session?: PollarSession }> {
@@ -386,7 +435,8 @@ export function createApp(o: AppOptions = {}): App {
         const address = who.id;
         const durable = !!supa && !isGuest(address);     // Pollar players: players(user_id, wallet, display_name)
         if (req.method === "GET") {
-          const name = durable ? (await supa!.player(address))?.name ?? null : (await profiles.get(address))?.name ?? null;
+          let name = durable ? (await supa!.player(address))?.name ?? null : (await profiles.get(address))?.name ?? null;
+          if (!name && who.session?.name) { const v = validateName(nameFromProfile(who.session.name)); if (v.ok) name = v.name; }   // Google's name, never a prompt
           if (name) nameCache.set(address, name);
           return json(res, 200, { address, name, hasName: !!name });
         }
@@ -525,21 +575,20 @@ export function createApp(o: AppOptions = {}): App {
         for (const id of houseRuns) if (runs.get(id)?.match.finished()) houseRuns.delete(id);
         if (houseRuns.size >= HOUSE_MAX) return json(res, 409, { error: "Three house rooms are already open. Join one of them instead." });
         const started = await runs.start("House Byte");
-        houseRuns.add(started.runId);
         const run = runs.get(started.runId)!;
         const turn = run.match.snapshot().turn;
         const seat = run.room.take(user, turn);                     // the starter is seated first, so they host the room
         runs.announce(run, { type: "seat", action: "take", seat: seat.no, address: user, turn, detail: `${runs.nameOf(user)} opened the room and took seat ${seat.no}.` });
-        playRunOverHttp(`http://127.0.0.1:${port}`, { callsign: "House Byte", delayMs: houseDelayMs, existing: started, signal: houseStop.signal })
-          .catch((e) => console.warn(`[rooms] house Byte stopped in ${started.runId}:`, (e as Error).message))
-          .finally(() => houseRuns.delete(started.runId));
+        playHouse(run);
+        runs.touch(run);
         return json(res, 200, { runId: run.id, code: run.id, seat: seat.no, token: seat.token, host: true, room: run.room.summary(user, Object.fromEntries(nameCache)) });
       }
       if (p === "/api/v1/rooms/quick" && req.method === "POST") {
         const b = await readJson(req);
         const user = await identify(req, b);
-        const run = runs.quickPick();
+        const run = runs.quickPick((r) => !ledger.backersOf(r.id)[user]);   // one side per run
         if (!run) return json(res, 404, { error: "No room has a free seat right now. A room opens when a Byte agent starts a run." });
+        runs.touch(run);
         const seat = run.room.take(user, run.match.snapshot().turn);
         runs.announce(run, { type: "seat", action: "take", seat: seat.no, address: user, turn: run.match.snapshot().turn, detail: `${runs.nameOf(user)} took seat ${seat.no}.` });
         return json(res, 200, { runId: run.id, code: run.id, seat: seat.no, token: seat.token });
@@ -553,16 +602,20 @@ export function createApp(o: AppOptions = {}): App {
         const turn = run.match.snapshot().turn;
         if (rs[2] === "room") {
           run.room.setPrivate(user, !!b.private);                   // 403 "Only the host can make the room private."
+          runs.touch(run);
           return json(res, 200, { runId: run.id, private: run.room.private, host: run.room.host === user, room: run.room.summary(user, Object.fromEntries(nameCache)) });
         }
         if (b.action === "leave") {
           const left = run.room.leave(user);
+          runs.touch(run);
           if (left) runs.announce(run, { type: "seat", action: "leave", seat: left.no, address: user, turn, detail: `${runs.nameOf(user)} left seat ${left.no}.` });
           return json(res, 200, { runId: run.id, seat: null, seats: run.room.view(user, Object.fromEntries(nameCache)), room: run.room.summary(user, Object.fromEntries(nameCache)) });
         }
         if (run.match.finished()) return json(res, 409, { error: "This run is over. Find another room." });
+        if (ledger.backersOf(run.id)[user]) return json(res, 409, { error: BACKER_NO_SEAT });   // one side per run
         const had = run.room.seatOf(user);
         const seat = run.room.take(user, turn);                     // 409 with a clear sentence when all four are taken
+        runs.touch(run);
         if (!had) runs.announce(run, { type: "seat", action: "take", seat: seat.no, address: user, turn, detail: `${runs.nameOf(user)} took seat ${seat.no}.` });
         return json(res, 200, { runId: run.id, seat: seat.no, token: seat.token, host: run.room.host === user, seats: run.room.view(user, Object.fromEntries(nameCache)), room: run.room.summary(user, Object.fromEntries(nameCache)) });
       }
@@ -605,6 +658,7 @@ export function createApp(o: AppOptions = {}): App {
             results.push({ ok: true, trap });
           } catch (e) { results.push({ ok: false, error: (e as Error).message }); }
         }
+        runs.touch(run);
         return json(res, 200, { results, turn: run.match.snapshot().turn, ...(await bal(user)) });
       }
       // A signed-in backer's position: stake, share of the pool, and the payout if the run ended now (proRata, like the program).
@@ -619,8 +673,11 @@ export function createApp(o: AppOptions = {}): App {
         const poolMicro = Math.round(s.poolNow * MICRO);
         const payoutNowMicro = stakeMicro > 0 ? Number(proRata(BigInt(poolMicro), BigInt(stakeMicro), BigInt(totalMicro))) : 0;
         const paidMicro = ledger.trapsOf(user, run.id).filter((t) => t.status === "paid").reduce((n, t) => n + (t.payout ?? 0), 0);
+        const seated = !!run.room.seatOf(user);
         return json(res, 200, {
           runId: run.id, user, backingOpen: s.backingOpen, backingClosed: run.match.backingClosedReason(),
+          side: stakeMicro > 0 ? "backer" : seated ? "setter" : null, seated,
+          cannotSeat: stakeMicro > 0 ? BACKER_NO_SEAT : null, cannotBack: seated ? SEATED_NO_BACK : null,
           stakeMicro, stakeUsd: fromMicro(stakeMicro),
           sharePct: totalMicro > 0 ? Math.round((10000 * stakeMicro) / totalMicro) / 100 : 0,
           payoutNowMicro, payoutNowUsd: fromMicro(payoutNowMicro),
@@ -649,6 +706,7 @@ export function createApp(o: AppOptions = {}): App {
           const paid = ledger.settleBackers(run.id, treasuryPayout);
           for (const [u, share] of Object.entries(paid)) { if (share > 0) await moneyLater(u, share, "payout", `${run.id}:payout:${u}`); else await moneyLater(u, 0, "settle", `${run.id}:settle:${u}`); }
           for (const t of ledger.trapsIn(run.id)) if (!(t.user in paid)) await moneyLater(t.user, 0, "settle", `${run.id}:settle:${t.user}`);
+          runs.touch(run);
           return json(res, 200, { runId: run.id, treasuryPayoutMicro: treasuryPayout, paid, duplicate: false });
         }
         const user = await identify(req, b);
@@ -667,12 +725,14 @@ export function createApp(o: AppOptions = {}): App {
           catch (e) { await storeFor(user).applyDelta(user, micro, "refund", `refund:${ref}`); throw new FiatError(`plant failed: ${(e as Error).message}`, 400); }
           planted.set(ref, trap);
           ledger.ownTrap(trap.id, { user, runId: run.id, stake: micro });
+          runs.touch(run);
           return json(res, 200, { trap, turn: run.match.snapshot().turn, ...(await bal(user)) });   // turn: the undelayed truth for "Live from turn N. Byte is on turn M."
         }
         if (fp[2] === "back-fiat") {
           if (!chain.backByte) return json(res, 400, { error: "chain cannot back from the server" });
           const closed = run.match.backingClosedReason();   // server-enforced cut-off (the program itself still accepts back_byte while live)
           if (closed) throw new FiatError(closed, 400);
+          if (run.room.seatOf(user)) throw new FiatError(SEATED_NO_BACK, 409);   // one side per run
           const micro = toMicro(Number(b.amount ?? 0));
           const nth = backCount.get(`${run.id}:${user}`) ?? 0;
           const ref = `${run.id}:back:${user}:${nth}`;
@@ -682,6 +742,7 @@ export function createApp(o: AppOptions = {}): App {
           backCount.set(`${run.id}:${user}`, nth + 1);
           ledger.recordBacker(run.id, user, micro);
           run.match.sync();
+          runs.touch(run);
           return json(res, 200, { backerTotal: run.match.snapshot().backerTotal, backed: ledger.backersOf(run.id)[user], ...(await bal(user)) });
         }
         // reveal-fiat (I2): the browser kept word+salt; we verify against the commitment and reveal as treasury.
@@ -701,6 +762,7 @@ export function createApp(o: AppOptions = {}): App {
         try { fired = await chain.revealTrap({ trapId, word, saltHex, setter: treasury.setter }); }
         catch (e) { throw new FiatError(`reveal rejected: ${(e as Error).message}`, 400); }
         const after = ledger.trapOwner(trapId)!;      // credited by the onTrapFired hook, synchronously
+        runs.touch(run);
         return json(res, 200, { trapId, status: after.status, payoutMicro: after.payout ?? 0, fired, ...(await bal(user)) });
       }
 
@@ -718,8 +780,9 @@ export function createApp(o: AppOptions = {}): App {
           if (req.headers["x-user"] || req.headers.authorization) { try { viewer = await identify(req, {}); run.room.touch(viewer, run.match.snapshot().turn); } catch { viewer = null; } }
           // display names for every player on the board (setters, fiat backers, seats); the page shows short addresses for the rest
           const ids = new Set<string>([...feed.state.traps.map((t) => t.setter), ...Object.keys(ledger.backersOf(run.id)), ...run.room.humans().map((s) => s.address)]);
-          const players = { ...(await profiles.names(ids)), ...(supa ? await supa.names([...ids].filter((a) => !isGuest(a))).catch(() => ({})) : {}) };
+          const players: Record<string, string> = { ...(await profiles.names(ids)), ...(supa ? await supa.names([...ids].filter((a) => !isGuest(a))).catch(() => ({})) : {}) };
           for (const [a, n] of Object.entries(players)) nameCache.set(a, n);
+          for (const a of ids) if (!players[a] && nameCache.has(a)) players[a] = nameCache.get(a)!;
           // The room (seats, host, private) is read live, never from the delayed board history: it comes as a
           // top-level `room` object, and is also merged into `state` for older readers. Event snapshots do not
           // carry it, so a replayed event can never put an older room setting back on screen.
@@ -765,19 +828,26 @@ export function createApp(o: AppOptions = {}): App {
       catch (e) { console.warn("[fiat] migration skipped:", (e as Error).message); }
     }
     try { const w = await withdrawals.sweep(); if (w.settled || w.refunded) console.log(`[fiat] withdrawals on start: ${w.settled} settled, ${w.refunded} refunded`); } catch (e) { console.warn("[fiat] withdrawal sweep failed:", (e as Error).message); }
+    // runs saved in the last two hours come back first: live ones continue, finished ones stay answerable
+    const back = await runs.restoreAll();
+    for (const r of back.restored) console.log(`[runs] restored ${r.id} (${r.match.finished() ? "finished" : `live, turn ${r.match.snapshot().turn}`}${houseResume.includes(r) ? ", house Byte" : ""})`);
+    for (const s of back.skipped) console.warn(`[runs] ${s.runId} could not be restored: ${s.reason}`);
+    for (const r of houseResume.splice(0)) playHouse(r);
     const refunds: { user: string; micro: number; ref: string }[] = [];
-    const live = new Set(runs.all().filter((r) => !r.match.finished()).map((r) => r.id));
+    // stakes are refunded only for runs that truly cannot come back: a restored run (live or finished) keeps them
+    const live = new Set([...runs.all().filter((r) => !r.match.finished() || r.restored).map((r) => r.id)]);
     for (const st of supa ? [supa, memStore] : [memStore]) {
       try { for (const r of await refundOrphans(st, live)) { refunds.push(r); console.log(`[fiat] refunded $${microToUsd(r.micro)} to ${shortAddress(r.user)} for an unfinished run (${r.ref})`); } }
       catch (e) { console.warn(`[fiat] ${st.kind} refunds skipped:`, (e as Error).message); }
     }
-    return { refunds, migrated };
+    return { refunds, migrated, restored: back.restored.map((r) => r.id) };
   }
+  const flush = async () => { try { await runs.flush(); } catch (e) { console.warn("[runs] flush failed:", (e as Error).message); } };
   return {
-    server, runs, ledger, pollar, store: supa, players, withdrawals, startup,
+    server, runs, ledger, pollar, store: supa, players, withdrawals, startup, flush,
     port: () => port,
     listen: (want: number) => new Promise<number>((r) => server.listen(want, async () => { port = (server.address() as any).port; await startup(); r(port); })),
-    close: () => { clearInterval(retry); houseStop.abort(); return new Promise<void>((r) => server.close(() => r())); },
+    close: async () => { clearInterval(retry); houseStop.abort(); await flush(); return new Promise<void>((r) => server.close(() => r())); },
   };
 }
 
@@ -821,6 +891,8 @@ if (isMain) {
   if (CROWD && process.env.CHAIN === "solana") console.warn("CROWD/SIM: simulated viewers only work on the mock chain; CHAIN=solana → crowd disabled");
   const app = createApp({ sim: SIM, crowd: CROWD ? crowd : false, oraclePayTo: process.env.ORACLE_PAYTO, network: process.env.X402_NETWORK, facilitator: process.env.X402_FACILITATOR });
   const port = await app.listen(PORT);
+  // a deploy or a restart sends SIGTERM: every run is saved before the process goes, so it comes back on the next start
+  for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, async () => { console.log(`[process] ${sig}: saving runs`); await app.flush(); process.exit(0); });
   const mode = SIM ? "SIM (crowd + self-play driver)" : CROWD ? "CROWD (simulated viewers on every run)" : process.env.CHAIN ?? "mock";
   console.log(`WordTrap ${mode} · api http://localhost:${port}/api/v1 · spec /api/v1/spec · watch /watch/<runId>`);
   if (app.pollar.kind === "pollar") {

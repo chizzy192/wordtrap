@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePollar, useChains, addressForChain } from "@pollar/react";
 import type { SubmitOutcome, TxHistoryState, WalletBalanceState } from "@pollar/core";
 import { fmtUsd, toTokens, unitsOf } from "./units";
+import { useMockPollar, mockPollarConfig } from "./mockPollar";
 
 type Mode = "demo" | "pollar";
 const SERVER = (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "";
@@ -13,6 +14,10 @@ const POLL_MS = 2000;
 /** The USDC devnet faucet Pollar's wallet balance modal links to. */
 const FAUCET = "https://faucet.circle.com/";
 const CHIPS = [1, 2, 5, 10];
+/** Browser-test builds only (VITE_WT_MOCK_POLLAR=1): usePollar() is replaced by a mock when the test has set window.__wtPollarMock. */
+const MOCK_POLLAR = import.meta.env.VITE_WT_MOCK_POLLAR === "1";
+const CANCELLED = "Payment cancelled. Nothing was sent.";
+const cancelled = () => new Error(CANCELLED);
 
 interface Treasury { setter: string; pubkeyHex: string; chain: string; mode: string; address?: string; usdcMint?: string; network?: string; guestStartFunds?: number }
 const RETURN_TO = (() => { const r = new URLSearchParams(location.search).get("return") ?? ""; return /^\/[^/\\]/.test(r) ? r : ""; })();   // same-origin path only
@@ -78,8 +83,9 @@ function usdcOf(b: WalletBalanceState | undefined): number | null {
  * Demo mode is a guest id or a Wallet Standard address. `mode` never changes after mount, so the hook order is stable.
  */
 export function useIdentity(mode: Mode) {
-  const p = mode === "pollar" ? usePollar() : null;
-  const chains = mode === "pollar" ? useChains() : null;
+  const mock = MOCK_POLLAR && mode === "pollar" ? mockPollarConfig() : null;   // never set in a normal build
+  const p: ReturnType<typeof usePollar> | null = mode === "pollar" ? (mock ? useMockPollar() : usePollar()) : null;
+  const chains = mode === "pollar" && !mock ? useChains() : null;
   const [user, setUser] = useState<string>(() => (mode === "pollar" ? "" : readIdentity().id));
   const [displayName, setDisplayName] = useState<string>(() => readIdentity().name);
   const label = displayName || shortAddress(user);
@@ -211,8 +217,9 @@ function rowOf(r: any, treasury: string | null | undefined, credited: Set<string
 }
 /** Signatures the page is still trying to get credited, kept per player until the server answers credited. */
 const pendingKey = (user: string) => `wt.pending.${user}`;
-function loadPending(user: string): { signature: string; amount: number }[] { try { return JSON.parse(localStorage.getItem(pendingKey(user)) ?? "[]"); } catch { return []; } }
-function savePending(user: string, list: { signature: string; amount: number }[]) { try { if (list.length) localStorage.setItem(pendingKey(user), JSON.stringify(list)); else localStorage.removeItem(pendingKey(user)); } catch { /* private */ } }
+interface Pending { signature: string; amount: number; at?: number }
+function loadPending(user: string): Pending[] { try { return JSON.parse(localStorage.getItem(pendingKey(user)) ?? "[]"); } catch { return []; } }
+function savePending(user: string, list: Pending[]) { try { if (list.length) localStorage.setItem(pendingKey(user), JSON.stringify(list)); else localStorage.removeItem(pendingKey(user)); } catch { /* private */ } }
 
 /** Fixtures for ?demo= (presentation only; nothing is sent to the server). */
 function fixture(demo: string | null) {
@@ -237,29 +244,77 @@ export function App({ mode }: { mode: Mode }) {
   const [amount, setAmount] = useState(5);
   const [custom, setCustom] = useState("");
   const [showCustom, setShowCustom] = useState(false);
-  const [funding, setFunding] = useState<{ step: "idle" | "confirming" | "done" | "refused"; text: string }>({ step: "idle", text: "" });
+  // "sending" only while Pollar's window is open; once a signature exists the button is free and the pending list carries the wait
+  const [funding, setFunding] = useState<{ step: "idle" | "sending" | "done" | "refused"; text: string }>({ step: "idle", text: "" });
   const [copied, setCopied] = useState(false);
   const [, forceRender] = useState(0);
-  const pollRef = useRef<number>(0);
-  const [pending, setPending] = useState<{ signature: string; amount: number }[]>([]);
+  const [pending, setPending] = useState<Pending[]>([]);
   // Readiness: the server says whether it can credit a payment from the wallet the SDK will pay from. Nothing is sent otherwise.
   const [ready, setReady] = useState<{ ready: boolean; reason: string; link: boolean; checked: boolean }>({ ready: false, reason: "", link: false, checked: false });
   const [link, setLink] = useState<{ step: "idle" | "starting" | "ready" | "paying" | "confirming" | "done" | "refused"; amountMicro: number; amountText: string; wording: string; text: string }>({ step: "idle", amountMicro: 0, amountText: "", wording: "", text: "" });
   const [cashout, setCashout] = useState<{ open: boolean; amount: string; step: "idle" | "sending" | "sent" | "pending" | "refunded" | "refused"; text: string }>({ open: false, amount: "", step: "idle", text: "" });
   const [checking, setChecking] = useState<{ busy: boolean; text: string }>({ busy: false, text: "" });
 
+  /** Server call. `http` is the HTTP status (the body's own `status` field, "sent" or "credited", is kept as is). A refusal
+   *  throws the player sentence with the HTTP status as `cause`; a dead connection throws an "Offline" error so callers can keep retrying. */
   const api = useCallback(async (path: string, body?: unknown) => {
-    const r = await fetch(SERVER + path, body === undefined ? { headers: id.headers() } : { method: "POST", headers: id.headers(), body: JSON.stringify({ ...(body as object), ...(mode === "demo" ? { user: id.user } : {}) }) });
+    let r: Response;
+    try { r = await fetch(SERVER + path, body === undefined ? { headers: id.headers(), cache: "no-store" } : { method: "POST", headers: id.headers(), body: JSON.stringify({ ...(body as object), ...(mode === "demo" ? { user: id.user } : {}) }) }); }
+    catch { const e = new Error("The server didn't answer. Try again in a moment."); e.name = "Offline"; throw e; }
     const j = await r.json().catch(() => ({}));
-    if (!r.ok && r.status !== 202) throw new Error(friendly(j.error));
-    return { status: r.status, ...j };
+    if (!r.ok && r.status !== 202) throw new Error(friendly(j.error), { cause: r.status });   // cause = the HTTP status
+    return { http: r.status, ...j };
   }, [id.headers, id.user, mode]);
+  const idRef = useRef(id); idRef.current = id;   // the latest hook values for timers, without re-subscribing them
 
-  const refreshBalance = useCallback(async () => {
-    if (id.user) { try { setBalance(await api("/api/v1/fiat/balance")); } catch { /* not signed in */ } }
-    await id.refreshWallet();
-    if (mode === "pollar") id.loadHistory();
-  }, [api, id.user, id.refreshWallet, id.loadHistory, mode]);
+  /** The success line under the buttons, shown for 6 s. */
+  const doneTimer = useRef(0);
+  const announce = useCallback((text: string) => {
+    setFunding({ step: "done", text });
+    clearTimeout(doneTimer.current);
+    doneTimer.current = window.setTimeout(() => setFunding((f) => (f.step === "done" ? { step: "idle", text: "" } : f)), 6000);
+  }, []);
+
+  // Cash-out bookkeeping: the requestId (and amount) of a withdrawal this browser asked for is kept until the server
+  // settles it, so a retry or a later refresh asks about the same withdrawal instead of starting another.
+  const wdKey = useCallback(() => `wt.cashout.${id.user}`, [id.user]);
+  const loadWd = useCallback((): { requestId: string; amount: string } | null => { try { const raw = localStorage.getItem(wdKey()); if (!raw) return null; return raw.startsWith("{") ? JSON.parse(raw) : { requestId: raw, amount: "0" }; } catch { return null; } }, [wdKey]);
+  const clearWd = useCallback(() => { try { localStorage.removeItem(wdKey()); } catch { /* private */ } }, [wdKey]);
+  const wdBusy = useRef(false);
+  /** The wallet's balance lags the chain: after a cash-out it is read again after 5 s and 15 s (and right away by refreshAll). */
+  const walletSoon = useCallback(() => { for (const ms of [5000, 15000]) setTimeout(() => idRef.current.refreshWallet(), ms); }, []);
+  /** The server's answer to a withdrawal, fresh or re-asked by requestId: the game balance comes from the response at once. */
+  const applyWithdrawAnswer = useCallback((r: any) => {
+    if (typeof r.balanceMicro === "number") setBalance((b: any) => ({ ...(b ?? {}), balanceMicro: r.balanceMicro, balanceUsd: r.balanceUsd }));
+    if (r.status === "sent") { clearWd(); setCashout({ open: false, amount: "", step: "sent", text: `Sent ${usd(r.micro / 1e6)} to your Pollar wallet` }); walletSoon(); }
+    else if (r.status === "refunded") { clearWd(); setCashout((c) => ({ ...c, step: "refunded", text: friendly(r.reason, "The transfer did not go through. Your balance was restored.") })); }
+    else setCashout((c) => ({ ...c, open: false, step: "pending", text: "Sending to your wallet…" }));   // 202: asked again every 5 s
+  }, [clearWd, walletSoon]);
+
+  /** One source of truth. Reloads the game balance (with the credited signatures), settles a pending withdrawal, and reads
+   *  the Pollar wallet balance and activity. Called after every action, on window focus, every 5 s while anything is
+   *  pending and every 30 s otherwise. A pending payment row never outlives its credit: any stored signature the server
+   *  lists as credited is dropped here. */
+  const refreshAll = useCallback(async () => {
+    if (!id.user) return;
+    try {
+      const bal = await api("/api/v1/fiat/balance");
+      setBalance(bal);
+      if (mode === "pollar") {
+        const credited = new Set<string>((bal.deposits ?? []).map(String));
+        const list = loadPending(id.user), keep = list.filter((p) => !credited.has(p.signature));
+        if (keep.length !== list.length) { savePending(id.user, keep); setPending(keep); announce(`Added ${usd(list.filter((p) => credited.has(p.signature)).reduce((a, p) => a + p.amount, 0))} to your game balance`); }
+      }
+    } catch { /* signed out or offline: the next refresh tries again */ }
+    // a withdrawal still "pending" (or one this browser never heard the end of): a re-ask by requestId only looks it up, never sends again
+    const w = loadWd();
+    if (mode === "pollar" && w && !wdBusy.current) {
+      try { applyWithdrawAnswer(await api("/api/v1/fiat/withdraw", { amount: "0", requestId: w.requestId })); }
+      catch (e: any) { if (e.name !== "Offline" && e.cause !== 409) clearWd(); }   // the server never had it
+    }
+    await Promise.all([idRef.current.refreshWallet(), mode === "pollar" ? idRef.current.loadHistory() : Promise.resolve()]);
+  }, [api, id.user, mode, announce, loadWd, clearWd, applyWithdrawAnswer]);
+  const refreshRef = useRef(refreshAll); refreshRef.current = refreshAll;
   /** GET /api/v1/fiat/ready for the address the SDK would pay from. Called on sign-in and again right before a send. */
   const checkReady = useCallback(async (paying: string): Promise<{ ready: boolean; reason: string; link: boolean }> => {
     if (mode !== "pollar") return { ready: true, reason: "", link: false };
@@ -274,24 +329,28 @@ export function App({ mode }: { mode: Mode }) {
     } catch { return { ready: false, reason: "The server didn't answer. Try again in a moment.", link: false }; }
   }, [mode, id.token]);
   useEffect(() => { fetch(SERVER + "/api/v1/treasury").then((r) => r.json()).then(setTreasury).catch(() => setTreasury(null)); }, []);
-  useEffect(() => { refreshBalance(); }, [refreshBalance]);
+  useEffect(() => { if (mode === "pollar" && id.user) setPending(loadPending(id.user)); }, [mode, id.user]);   // what an earlier visit left waiting
 
-  // Signatures that were sent but not yet credited: retried on load and every 30 s until the server says credited.
-  const retryPending = useCallback(async () => {
-    if (mode !== "pollar" || !id.user || !id.token) return;
-    const list = loadPending(id.user); if (!list.length) { setPending([]); return; }
-    const keep: typeof list = [];
-    for (const item of list) {
-      try {
-        const r = await api("/api/v1/fiat/confirm", { signature: item.signature, amount: item.amount });
-        if (r.status === 200 && r.status !== undefined && r.credited !== undefined) { setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` }); continue; }   // credited (or already was)
-        keep.push(item);   // 202 pending
-      } catch (e: any) { setFunding({ step: "refused", text: friendly(e.message) }); }   // a definite refusal: drop it and say why
-    }
-    savePending(id.user, keep); setPending(keep);
-    if (keep.length !== list.length) refreshBalance();
-  }, [mode, id.user, id.token, api, refreshBalance]);
-  useEffect(() => { retryPending(); const t = setInterval(retryPending, 30_000); return () => clearInterval(t); }, [retryPending]);
+  // Signatures sent but not yet credited: asked every 3 s for their first 90 s, then every 30 s, until the server says credited.
+  useEffect(() => {
+    if (mode !== "pollar" || !id.user || !id.token || !pending.length) return;
+    let alive = true, timer = 0;
+    const tick = async () => {
+      const list = loadPending(id.user), keep: Pending[] = []; let creditedMicro = 0;
+      for (const item of list) {
+        try {
+          const r = await api("/api/v1/fiat/confirm", { signature: item.signature, amount: item.amount });
+          if (r.http === 200) creditedMicro += Number(r.micro) || Math.round(item.amount * 1e6); else keep.push(item);   // 202: still pending
+        } catch (e: any) { if (e.name === "Offline") keep.push(item); else setFunding({ step: "refused", text: friendly(e.message) }); }   // a definite refusal drops it and says why
+      }
+      if (!alive) return;
+      savePending(id.user, keep); setPending(keep);
+      if (creditedMicro) { announce(`Added ${usd(creditedMicro / 1e6)} to your game balance`); refreshRef.current(); }
+      if (keep.length) timer = window.setTimeout(tick, keep.some((k) => Date.now() - (k.at ?? 0) < 90_000) ? 3000 : 30_000);
+    };
+    timer = window.setTimeout(tick, 0);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [mode, id.user, id.token, pending.length, api, announce]);
   // On sign-in, ask the server to credit any finalized deposit from this wallet it has not credited yet.
   const reconcile = useCallback(async (manual = false) => {
     if (mode !== "pollar" || !id.user || !id.token) return;
@@ -300,9 +359,9 @@ export function App({ mode }: { mode: Mode }) {
       const r = await api("/api/v1/fiat/reconcile", {});
       const n = (r.credited ?? []).length;
       if (manual) setChecking({ busy: false, text: n ? `Found ${n} payment${n === 1 ? "" : "s"}: added ${usd((r.credited as any[]).reduce((a, c) => a + c.micro, 0) / 1e6)}.` : "No missing payments. Everything sent from your wallet is already in your game balance." });
-      if (n) refreshBalance();
+      if (n) refreshRef.current();
     } catch (e: any) { if (manual) setChecking({ busy: false, text: friendly(e.message) }); }
-  }, [mode, id.user, id.token, api, refreshBalance]);
+  }, [mode, id.user, id.token, api]);
   useEffect(() => { if (mode === "pollar" && id.user && id.token) reconcile(false); }, [mode, id.user, id.token]);
 
   // the live room: the current run's name, turn, fuse, cleared tiles and open seats
@@ -337,28 +396,36 @@ export function App({ mode }: { mode: Mode }) {
   const walletEmpty = mode === "pollar" && usdc !== null && usdc < amt;
   const paying = demo && demo.signedIn ? demo.address : id.solAddress;
   useEffect(() => { if (!signedIn) return; let alive = true; checkReady(paying).then((r) => { if (alive) setReady({ ...r, checked: true }); }); return () => { alive = false; }; }, [signedIn, paying, checkReady, link.step === "done"]);
-  const canAdd = signedIn && amt > 0 && funding.step !== "confirming" && !walletEmpty && !(mode === "pollar" && !treasury?.address) && (mode !== "pollar" || ready.ready);
+  const canAdd = signedIn && amt > 0 && funding.step !== "sending" && !walletEmpty && !(mode === "pollar" && !treasury?.address) && (mode !== "pollar" || ready.ready);
   const creditedSigs = useMemo(() => new Set<string>([...(balance?.deposits ?? []), ...(balance?.history ?? []).filter((h: any) => (h.reason === "pollar payment" || h.reason === "deposit") && h.ref).map((h: any) => String(h.ref))].map(String)), [balance]);
   const rows: Row[] = demo && demo.signedIn ? [...demo.rows] : (id.txHistory.step === "loaded" ? id.txHistory.data.records.map((r: any) => rowOf(r, treasury?.address, creditedSigs)) : []);
-  const confirming = funding.step === "confirming" || pending.length > 0;
+  const confirming = pending.length > 0;
+  const pendingUsd = pending.reduce((a, p) => a + p.amount, 0);
+  // refreshAll on load, on window focus, every 5 s while a payment or withdrawal is pending, every 30 s otherwise
+  const busy = pending.length > 0 || funding.step === "sending" || cashout.step === "sending" || cashout.step === "pending";
+  useEffect(() => {
+    if (!id.user) return;
+    refreshRef.current();
+    const t = setInterval(() => refreshRef.current(), busy ? 5000 : 30_000);
+    const onFocus = () => refreshRef.current();
+    window.addEventListener("focus", onFocus);
+    return () => { clearInterval(t); window.removeEventListener("focus", onFocus); };
+  }, [id.user, id.token, busy]);
 
   async function copyAddress() { if (await copyText(address)) { setCopied(true); setTimeout(() => setCopied(false), 2000); } }
 
   /** Cash-out: game balance back to the player's own Pollar wallet. The requestId is kept until the server settles it,
    *  so a retry after a dropped connection asks about the same withdrawal instead of starting another. */
-  const cashKey = () => `wt.cashout.${id.user}`;
   async function withdraw() {
-    const amt = cashout.amount.trim();
-    let requestId: string; try { requestId = localStorage.getItem(cashKey()) ?? ""; } catch { requestId = ""; }
-    if (!requestId) { requestId = "wd-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); try { localStorage.setItem(cashKey(), requestId); } catch { /* private */ } }
-    setCashout((c) => ({ ...c, step: "sending", text: "Sending USDC to your wallet…" }));
-    try {
-      const r = await api("/api/v1/fiat/withdraw", { amount: amt, requestId });
-      if (r.status === "sent") { try { localStorage.removeItem(cashKey()); } catch { /* private */ } setCashout({ open: false, amount: "", step: "sent", text: `Sent ${usd(r.micro / 1e6)} USDC to your Pollar wallet.` }); }
-      else if (r.status === "refunded") { try { localStorage.removeItem(cashKey()); } catch { /* private */ } setCashout((c) => ({ ...c, step: "refunded", text: "The transfer did not go through. Your balance was restored." })); }
-      else setCashout((c) => ({ ...c, step: "pending", text: "Your withdrawal is on its way. It settles within a few minutes." }));
-      refreshBalance();
-    } catch (e: any) { setCashout((c) => ({ ...c, step: "refused", text: friendly(e.message) })); }
+    const prior = loadWd();   // an earlier request this browser never heard the end of is asked about, never repeated
+    const amt = prior?.amount ?? cashout.amount.trim();
+    const requestId = prior?.requestId ?? "wd-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    try { localStorage.setItem(wdKey(), JSON.stringify({ requestId, amount: amt })); } catch { /* private */ }
+    setCashout((c) => ({ ...c, step: "sending", text: "Sending to your wallet…" }));
+    wdBusy.current = true;
+    try { applyWithdrawAnswer(await api("/api/v1/fiat/withdraw", { amount: amt, requestId })); }
+    catch (e: any) { if (e.name !== "Offline" && e.cause !== 409) clearWd(); setCashout((c) => ({ ...c, step: "refused", text: friendly(e.message) })); }
+    finally { wdBusy.current = false; refreshRef.current(); }   // both balances now; the wallet again at 5 s and 15 s
   }
   /** One-time wallet check: the server names an exact amount; the user pays it from the wallet they claim; the server
    *  links the address only when that exact, finalized payment arrives from it, then credits it as a deposit. */
@@ -383,7 +450,7 @@ export function App({ mode }: { mode: Mode }) {
       for (let i = 0; i < 60; i++) {
         const res = await fetch(SERVER + "/api/v1/fiat/link/confirm", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${id.token}` }, body: JSON.stringify({ signature: out.hash, address: id.solAddress }) });
         const j = await res.json().catch(() => ({}));
-        if (res.status === 200) { setLink((l) => ({ ...l, step: "done", text: `Wallet linked. Added $${(j.credited / 1e6).toFixed(2)} to your game balance.` })); await refreshBalance(); return; }
+        if (res.status === 200) { setLink((l) => ({ ...l, step: "done", text: `Wallet linked. Added $${(j.credited / 1e6).toFixed(2)} to your game balance.` })); await refreshRef.current(); return; }
         if (res.status !== 202) throw new Error(friendly(j.reason ?? j.error));
         await new Promise((r) => setTimeout(r, 3000));
       }
@@ -394,12 +461,12 @@ export function App({ mode }: { mode: Mode }) {
   async function addFunds() {
     if (!canAdd) return;
     const micro = Math.round(amt * 1e6);
-    setFunding({ step: "confirming", text: "Confirming your payment…" });
+    setFunding({ step: "sending", text: "" });
     try {
       if (mode === "demo") {
         const r = await api("/dev/credit", { amount: amt });
-        setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` });
-        await refreshBalance(); return;
+        announce(`Added ${usd(r.micro / 1e6)} to your game balance`);
+        await refreshRef.current(); return;
       }
       // never send before the server can credit: readiness is asked again right now, for the wallet the SDK pays from
       const gate = await checkReady(paying);
@@ -411,24 +478,14 @@ export function App({ mode }: { mode: Mode }) {
       if (fresh.mode === "pollar" && fresh.withdrawals !== "ready") throw new Error("This server has no treasury wallet set up yet, so adding funds is paused. Nothing was sent.");
       if (!fresh.address || !fresh.usdcMint) throw new Error("The server has no treasury address or USDC mint for this network yet.");
       // sendPayment takes integer base units for Solana (the mint's smallest unit): $5.00 of USDC is "5000000"
-      const out = await id.sendUsdc(fresh.address, micro, fresh.usdcMint);
-      if (out.status === "error") throw new Error(friendly((out as any).details ?? (out as any).message, "The payment was not sent."));
+      let out: SubmitOutcome;
+      try { out = await id.sendUsdc(fresh.address, micro, fresh.usdcMint); }
+      catch { throw cancelled(); }   // Pollar's window was closed, or the SDK gave up before anything was signed
+      if (out.status === "error") throw out.hash ? new Error(friendly(out.details ?? out.message, "The payment was not sent.")) : cancelled();   // declined = nothing was sent
       if (out.status === "cosign_pending") throw new Error("The payment is waiting for another device's approval.");
-      // the signature is kept until the server says credited (retried on load and every 30 s), then asked for now
-      const mine = [...loadPending(id.user), { signature: out.hash, amount: amt }]; savePending(id.user, mine); setPending(mine);
-      const gen = ++pollRef.current;
-      for (let i = 0; i < 40; i++) {
-        let r: any;
-        try { r = await api("/api/v1/fiat/confirm", { signature: out.hash, amount: amt }); }
-        catch (e: any) { savePending(id.user, loadPending(id.user).filter((x) => x.signature !== out.hash)); setPending(loadPending(id.user)); throw e; }   // a definite refusal
-        if (r.status === 200 && r.credited !== undefined) {
-          savePending(id.user, loadPending(id.user).filter((x) => x.signature !== out.hash)); setPending(loadPending(id.user));
-          setFunding({ step: "done", text: `Added ${usd(r.micro / 1e6)}` }); await refreshBalance(); return;
-        }
-        if (gen !== pollRef.current) return;
-        await new Promise((res) => setTimeout(res, 3000));
-      }
-      setFunding({ step: "confirming", text: "Confirming your payment…" });   // still pending: the 30 s retry keeps going
+      // sent: the button is free again right now; the signature waits in the pending list until the server says credited
+      const mine = [...loadPending(id.user), { signature: out.hash, amount: amt, at: Date.now() }]; savePending(id.user, mine); setPending(mine);
+      setFunding({ step: "idle", text: "" });
     } catch (e: any) { setFunding({ step: "refused", text: friendly(e.message) }); }
   }
 
@@ -517,7 +574,7 @@ export function App({ mode }: { mode: Mode }) {
           </div>
           {mode === "pollar" && amt > 0 && !walletEmpty && <p className="units">You're adding {usd(amt)} (Pollar shows this as {unitsOf(amt)} units of USDC)</p>}
           <div className="actions">
-            <button type="button" className="btn red" disabled={!canAdd || confirming} aria-busy={confirming} onClick={addFunds}>{`Add ${money(amt > 0 ? amt : 0)} to game`}</button>
+            <button type="button" className="btn red" disabled={!canAdd} aria-busy={funding.step === "sending"} onClick={addFunds}>{`Add ${money(amt > 0 ? amt : 0)} to game`}</button>
             {mode === "pollar" && <button type="button" className="btn outline" disabled={gameUsd < 1 || cashout.step === "sending"} onClick={() => setCashout((c) => ({ ...c, open: !c.open, amount: c.amount || Math.min(gameUsd, 5).toFixed(2), text: "" }))}>Withdraw</button>}
             {mode === "pollar" && <button type="button" className="btn outline" disabled={checking.busy} onClick={() => reconcile(true)}>Check for missing payments</button>}
           </div>
@@ -528,14 +585,13 @@ export function App({ mode }: { mode: Mode }) {
               <span className="foot">Minimum $1.00, up to {usd(gameUsd)}. USDC lands in the wallet you signed in with.</span>
             </div>
           )}
-          {cashout.step === "sending" && <div className="status" role="status" aria-live="polite">{cashout.text}<div className="progress" aria-hidden="true"></div></div>}
-          {cashout.step === "pending" && <p className="status" role="status">{cashout.text}</p>}
-          {cashout.step === "sent" && <p className="status ok" role="status">{cashout.text}</p>}
+          {(cashout.step === "sending" || cashout.step === "pending") && <div className="status" role="status" aria-live="polite" data-wt="withdrawing">{cashout.text}<div className="progress" aria-hidden="true"></div></div>}
+          {cashout.step === "sent" && <p className="status ok" role="status" aria-live="polite" data-wt="withdrawn">{cashout.text}</p>}
           {(cashout.step === "refunded" || cashout.step === "refused") && <p className="status err" role="alert">{cashout.text}</p>}
-          {confirming && <div className="status" role="status" aria-live="polite">Confirming your payment…<div className="progress" aria-hidden="true"></div></div>}
+          {confirming && <div className="status" role="status" aria-live="polite" data-wt="confirming">Confirming your payment… {usd(pendingUsd)}<div className="progress" aria-hidden="true"></div></div>}
           {checking.text && <p className="status" role="status">{checking.text}</p>}
-          {funding.step === "done" && !confirming && <p className="status ok" role="status" aria-live="polite">{funding.text}</p>}
-          {funding.step === "refused" && <p className="status err" role="alert">{funding.text}</p>}
+          {funding.step === "done" && <p className="status ok" role="status" aria-live="polite" data-wt="funded">{funding.text}</p>}
+          {funding.step === "refused" && <p className="status err" role="alert" data-wt="refused">{funding.text}</p>}
           <p className="foot">{mode === "pollar" ? "Pollar pays the network fee. Your balance updates in about 20 seconds." : "Play money for this server only."}</p>
         </section>
 

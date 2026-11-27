@@ -19,6 +19,13 @@ export class Room {
   botsEnabled: boolean;
   constructor(botsEnabled: boolean) { this.botsEnabled = botsEnabled; }
 
+  dump() { return { seats: this.seats.map((s) => (s ? { ...s } : null)), host: this.host, private: this.private, botsEnabled: this.botsEnabled }; }
+  static load(d: any, botsEnabled?: boolean): Room {
+    const r = new Room(botsEnabled ?? !!d.botsEnabled);
+    (d.seats ?? []).forEach((s: any, i: number) => { if (i < SEAT_COUNT) r.seats[i] = s ? { no: Number(s.no), address: String(s.address), token: String(s.token), takenTurn: Number(s.takenTurn), lastActiveTurn: Number(s.lastActiveTurn) } : null; });
+    r.host = d.host ?? null; r.private = !!d.private;
+    return r;
+  }
   humans(): Seat[] { return this.seats.filter((s): s is Seat => !!s); }
   seatOf(address: string): Seat | undefined { return this.humans().find((s) => s.address === address); }
   freeCount(): number { return this.seats.filter((s) => !s).length; }

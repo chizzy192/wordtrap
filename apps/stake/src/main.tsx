@@ -12,6 +12,12 @@ const BASE_URL = (import.meta.env.VITE_POLLAR_BASE_URL as string | undefined) ??
 
 async function mount() {
   const root = createRoot(document.getElementById("root")!);
+  // Browser-test builds only (VITE_WT_MOCK_POLLAR=1): with window.__wtPollarMock in place the page runs in Pollar mode
+  // over a mocked usePollar() (apps/stake/src/mockPollar.ts) and never loads the SDK. A normal build has no such path.
+  if (import.meta.env.VITE_WT_MOCK_POLLAR === "1" && (window as any).__wtPollarMock) {
+    root.render(<StrictMode><App mode="pollar" /></StrictMode>);
+    return;
+  }
   if (!KEY) {
     root.render(<StrictMode><App mode="demo" /></StrictMode>);
     return;

@@ -271,7 +271,7 @@ const closePopovers = () => popovers.forEach((id) => { $(id).hidden = true; });
 function renderAccount() {
   const a = $("account");
   if (!identity.id) { a.innerHTML = `<button type="button" class="btn small" id="signInBtn">Sign in</button>`; return; }
-  a.innerHTML = `<span class="who" title="${esc(identity.id)}">${esc(identity.label(identity.id))}</span><span class="bal">${usd((balanceMicro ?? 0) / 1e6)}<small>${treasury?.mode === "pollar" && identity.mode === "wallet" ? "Pollar wallet" : "Test funds"}</small></span><button type="button" class="btn small yellow" id="addFundsBtn">Add funds</button>`;
+  a.innerHTML = `<span class="who" title="${esc(identity.id)}">${esc(identity.label(identity.id))}</span><span class="bal">${usd((balanceMicro ?? 0) / 1e6)}<small>${treasury?.mode === "pollar" && identity.mode === "wallet" ? "Pollar wallet" : "Test funds"}</small></span><button type="button" class="btn small yellow" id="addFundsBtn">Add funds</button><button type="button" class="btn text" id="changeName">Change name</button>`;
 }
 async function refreshBalance() { const b = await identity.balance().catch(() => null); if (b) { balanceMicro = b.balanceMicro; renderAccount(); } }
 function openFunds() {
@@ -283,6 +283,7 @@ document.addEventListener("click", async (e) => {
   const t = e.target.closest("button, a"); if (!t) return;
   if (t.id === "signInBtn") { closePopovers(); $("firstVisit").hidden = false; }
   if (t.id === "addFundsBtn") openFunds();
+  if (t.id === "changeName") { closePopovers(); $("nameInput").value = identity.name || ""; $("nameMsg").textContent = ""; $("namePrompt").hidden = false; $("nameInput").focus(); }
   if (t.id === "justWatch" || t.id === "fundsClose") closePopovers();
   if (t.id === "guestBtn") { identity.choose("guest"); closePopovers(); await identity.fundGuestOnce(treasury?.guestStartFunds ?? 10); await refreshBalance(); if (!identity.name) { $("nameInput").value = ""; $("namePrompt").hidden = false; $("nameInput").focus(); } }
   if (t.id === "googleBtn") { if (treasury?.mode === "pollar") location.href = `/stake/?return=${encodeURIComponent(location.pathname + location.search)}`; else $("googleHelp").textContent = "Google sign-in isn't set up on this server yet. Play as a guest for now."; }

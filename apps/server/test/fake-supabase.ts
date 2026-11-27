@@ -3,7 +3,7 @@ import type { SupabaseLike } from "../src/store.ts";
 
 /** A fake Supabase: four tables, credit_deposit + apply_delta with the documented rules, and an offline switch. */
 export function fakeSupabase() {
-  const t = { players: [] as any[], balances: [] as any[], deposits: [] as any[], ledger: [] as any[], decks: [] as any[] };
+  const t = { players: [] as any[], balances: [] as any[], deposits: [] as any[], ledger: [] as any[], decks: [] as any[], runs: [] as any[] };
   let nextId = 1; const state = { offline: false, calls: [] as string[] };
   const fail = () => ({ data: null, error: { message: "TypeError: fetch failed" } });
   const bal = (u: string) => t.balances.find((b) => b.user_id === u);
@@ -33,6 +33,7 @@ export function fakeSupabase() {
     const b: any = {
       select(c: string) { cols = c.split(",").map((x) => x.trim()); return b; },
       eq(k: string, v: any) { filters.push((r) => r[k] === v); return b; },
+      gte(k: string, v: any) { filters.push((r) => r[k] >= v); return b; },
       in(k: string, vs: any[]) { filters.push((r) => vs.includes(r[k])); return b; },
       order(k: string, o: { ascending: boolean }) { order = [k, o.ascending]; return b; },
       limit(n: number) { lim = n; return b; },

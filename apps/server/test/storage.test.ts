@@ -97,7 +97,8 @@ test("supabase: stake, bounty and backer payout move through apply_delta with st
     const big = await t.api(`/runs/${run.runId}/plant-fiat`, "tok", { commitmentHex: "ab".repeat(32), stake: 50 }, { "x-seat-token": token });
     assert.equal(big.http, 402); assert.equal(big.error, "Not enough funds. Add funds to play.");
     assert.equal(fake.tables.balances.find((x) => x.user_id === SOL)?.micro, 4 * MICRO);
-    // back Byte: its own ref per back
+    // back Byte: its own ref per back (one side per run: the seat is given up first)
+    await t.api(`/runs/${run.runId}/seat`, "tok", { action: "leave" });
     const back = await t.api(`/runs/${run.runId}/back-fiat`, "tok", { amount: 1 });
     assert.equal(back.balanceMicro, 3 * MICRO); assert.ok(fake.tables.ledger.some((l) => l.kind === "back" && l.ref === `${run.runId}:back:${SOL}:0`));
     // Byte plays the mined word → the bounty is paid through apply_delta, once
@@ -128,10 +129,13 @@ test("supabase: a restart keeps balances; a stake whose run never settled is ref
     const word = run.state.hand.find((w: string) => w !== run.state.safe)!;
     const c = toHex(commitment(word, salt, await t1.treasuryKey())); ref = `${run.runId}:plant:${c.slice(0, 16)}`;
     await t1.api(`/runs/${run.runId}/plant-fiat`, "tok", { commitmentHex: c, stake: 2 }, { "x-seat-token": token });
+    await t1.api(`/runs/${run.runId}/seat`, "tok", { action: "leave" });   // one side per run
     await t1.api(`/runs/${run.runId}/back-fiat`, "tok", { amount: 1 });
     assert.equal((await t1.api("/api/v1/fiat/balance", "tok")).balanceMicro, 2 * MICRO);
   } finally { await t1.close(); }
-  // "restart": a fresh process with an empty memory ledger and no runs, the same Supabase
+  // "restart": a fresh process with an empty memory ledger, the same Supabase. The saved run is older than two hours,
+  // so it truly cannot come back (restore.test.ts covers the restored case, where nothing is refunded).
+  for (const row of fake.tables.runs) row.updated_at = new Date(Date.now() - 3 * 3600_000).toISOString();
   const t2 = await boot(fake);
   try {
     assert.equal((await t2.api("/api/v1/fiat/balance", "tok")).balanceMicro, 5 * MICRO, "balance kept across the restart and the open stake + back refunded");

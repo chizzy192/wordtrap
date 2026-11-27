@@ -94,6 +94,23 @@ export class MockChain implements Chain {
     return out;
   }
 
+  /** Everything a restart needs to continue this chain, JSON-safe (bigints as strings). */
+  dump() {
+    return { kind: "mock", status: this.status, turn: this.turn, multiplierBps: this.multiplierBps, minStake: this.minStake, sigN: this.sigN,
+      backers: [...this.backers].map(([u, v]) => [u, String(v)]), backerTotal: String(this.backerTotal), bountyBudget: String(this.bountyBudget), vault: String(this.vault),
+      traps: [...this.traps.values()].map((t) => ({ ...t, stakeRaw: String(t.stakeRaw) })),
+      words: [...this.words].map(([w, e]) => [w, { turns: [...e.turns], challenged: e.challenged }]) };
+  }
+  static load(d: any): MockChain {
+    const c = new MockChain();
+    c.status = d.status; c.turn = Number(d.turn); c.multiplierBps = Number(d.multiplierBps); c.minStake = Number(d.minStake); c.sigN = Number(d.sigN ?? 0);
+    for (const [u, v] of d.backers ?? []) c.backers.set(String(u), BigInt(v));
+    c.backerTotal = BigInt(d.backerTotal ?? 0); c.bountyBudget = BigInt(d.bountyBudget ?? 0); c.vault = BigInt(d.vault ?? 0);
+    for (const t of d.traps ?? []) c.traps.set(t.id, { ...t, stakeRaw: BigInt(t.stakeRaw) });
+    for (const [w, e] of d.words ?? []) c.words.set(String(w), { turns: new Set<number>(e.turns), challenged: Number(e.challenged) });
+    return c;
+  }
+
   /** Mock treasury: the name "treasury", hashed like every other mock key. */
   treasury() { return { setter: "treasury", pubkey: TREASURY_PUBKEY }; }
   trapCommitment(trapId: string) { return this.traps.get(trapId)?.commitment; }

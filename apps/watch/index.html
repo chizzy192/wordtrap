@@ -302,6 +302,7 @@ header { display: flex; align-items: center; gap: calc(var(--gap) * .6); padding
 /* ---------- seats ---------- */
 #seatBlock { margin-bottom: calc(var(--gap) * .6); }
 #seatBlock[hidden] { display: none; }
+#plantToggle[hidden], .private[hidden] { display: none; }   /* their display rules would otherwise beat the hidden attribute */
 #seats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .seat { height: 48px; display: grid; place-items: center; padding: 0 8px; font: 600 1.15em/1 var(--cond); text-align: center; border: var(--lw) solid var(--ink); position: relative; }
 .seat.human { background: #FFFFFF; color: #14121A; box-shadow: var(--sh) var(--sh) 0 var(--blue); }
@@ -310,6 +311,10 @@ header { display: flex; align-items: center; gap: calc(var(--gap) * .6); padding
 .seat.open { background: transparent; color: var(--soft); border: var(--lw) dashed var(--line); font: 500 .85em/1.1 var(--sans); }
 .seat.stamp { animation: stamp .15s var(--snap); }
 .seat.flipseat { animation: flipy .2s var(--snap); }
+/* the backer's line: their stake and the pool, live; shown only to a viewer who backed this run */
+#backerBanner { display: none; margin: 10px 0 var(--gap); padding: 12px 16px; background: var(--yellow); color: #14121A; border: var(--lw) solid #14121A; box-shadow: var(--sh) var(--sh) 0 var(--hard); font: 600 1.05em/1.3 var(--sans); }
+#backerBanner.on { display: block; }
+#backerBanner b { font: 800 1.3em/1 var(--cond); font-variant-numeric: tabular-nums; }
 @keyframes flipy { 0% { transform: rotateY(90deg); } 100% { transform: rotateY(0); } }
 .seatrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: calc(var(--gap) * .45); }
 .private { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
@@ -522,6 +527,7 @@ body.tight4 .fuselabel { margin-top: 0; font-size: .8em; }
 </section>
 
 <div id="end" role="status"></div>
+<div id="backerBanner" role="status" aria-live="polite"></div>
 
 <main class="grid">
   <div class="leftcol">
@@ -659,6 +665,8 @@ let players = {};            // address -> display name, from the spectate feed
 let treasury = null;         // { pubkeyHex, mode, guestStartFunds } from /api/v1/treasury
 let balanceMicro = null;     // the signed-in player's ledger balance
 let pendingAction = null;    // what to resume after sign-in / name / top-up
+let myPos = null;            // GET /runs/:id/my-position for the signed-in viewer: side, stake, why the other side is closed
+const isBacker = () => !!myPos && myPos.stakeMicro > 0;
 let firedOpen = false;       // fired-mines list expanded
 
 // ---- crypto: identical to packages/shared + the Rust program ----
@@ -720,10 +728,11 @@ function renderSeats(s) {
   const free = r.seats.some((x) => x.kind === "open" || x.kind === "bot");   // a bot steps aside when a person sits
   $("seats").innerHTML = r.seats.map((seat, i) =>
     `<div class="seat ${seat.kind}${seat.you ? " you" : ""}" role="listitem" tabindex="0" data-kind="${seat.kind}" data-seat="${i}" title="${esc(seat.address ?? seat.name ?? "")}" aria-label="${esc(seatLabel(seat, i))}">${seat.kind === "open" ? "Open seat" : seat.kind === "bot" ? "Bot" : esc(seat.you ? "You" : identity.label(seat.address ?? seat.name, players))}</div>`).join("");
-  $("seatActions").innerHTML = (free && !me ? `<button type="button" class="btn" id="takeSeat">Take a seat</button>` : "")
+  $("seatActions").innerHTML = (free && !me && !isBacker() ? `<button type="button" class="btn" id="takeSeat">Take a seat</button>` : "")
     + `<button type="button" class="btn outline" id="copyLink">Copy room link</button>`
-    + (me ? `<button type="button" class="btn text" id="leaveSeat">Leave seat</button><button type="button" class="btn text" id="editName">Edit name</button>` : "")
-    + (!free && !me ? `<span class="empty">Seats are full. You can still back Byte.</span>` : "");
+    + (me ? `<button type="button" class="btn text" id="leaveSeat">Leave seat</button>` : "")
+    + (isBacker() ? `<span class="empty" id="noSeat">${esc(myPos.cannotSeat || "You backed Byte in this run, so you can't take a seat here.")}</span>` : "")
+    + (!free && !me && !isBacker() ? `<span class="empty">Seats are full. You can still back Byte.</span>` : "");
   // seats: taken → stamp; bot ↔ human → flip on the vertical axis
   if (seatsShown && !reduced.matches) r.seats.forEach((seat, i) => {
     const was = seatsShown[i], el = document.querySelector(`#seats .seat[data-seat="${i}"]`);
@@ -743,10 +752,23 @@ function miniCard(w, safe, tap) {
   return `<div class="mini${w === safe ? " safe" : ""}${tap ? " tap" : ""}" data-word="${esc(w)}"${tap ? ' tabindex="0" role="button" aria-label="Copy ' + esc(w) + ' into the planter"' : ""}><span class="w">${esc(w)}</span><span class="risk">${w === safe ? "Safe card" : ""}</span></div>`;
 }
 
+/** A backer sees their stake and the pool (live), the board, Byte's speech and the play-by-play, and no planting controls. */
+function renderBacker(s) {
+  const b = $("backerBanner");
+  if (isBacker()) { b.innerHTML = `You backed Byte with <b>${fmt(myPos.stakeMicro / 1e6)}</b>. In the pool now <b>${fmt(s.poolNow ?? s.backerTotal)}</b>`; b.classList.add("on"); }
+  else b.classList.remove("on");
+  $("plantToggle").hidden = isBacker();
+  if (isBacker()) { $("plantPanel").classList.remove("open"); $("plantToggle").setAttribute("aria-expanded", "false"); }
+  $("trapLink").hidden = isBacker();                 // one side per run
+  $("backLink").hidden = !!myPos?.seated;
+  const help = document.querySelector("#upNextRight .help");
+  if (help) help.textContent = isBacker() ? "You backed Byte. Mines are for seated players." : "Take a seat to mine these before Byte gets there.";
+}
 function render() {
   if (!state) return;
   const s = withDemo(state);
   renderSeats(s);
+  renderBacker(s);
   $("promptStrip").classList.toggle("shielded", !!s.shielded);
   $("shieldLine").hidden = !s.shielded;
   const next = s.nextHand ?? s.next;                 // the server sends nextHand; the ?demo fixture used `next`
@@ -952,7 +974,6 @@ $("plantPanel").addEventListener("click", (e) => {
 $("pBtn").onclick = async () => {
   if (!runId) return ($("pMsg").textContent = "No live run yet.");
   if (!identity.id) { pendingAction = "plant"; return openFirstVisit(); }
-  if (!identity.name) { pendingAction = "plant"; return openNamePrompt(); }
   const typed = $("pWord").value.toLowerCase().replace(/[^a-z]/g, "");
   const words = [...picked, ...(typed ? [typed] : [])].filter((w, i, a) => a.indexOf(w) === i);
   const stake = Number($("pStake").value);
@@ -1020,6 +1041,8 @@ async function poll() {
     if (names) players = names;
     if (rm && gen === roomGen) room = rm;   // undelayed; ignored if the viewer acted while this poll was in flight
     lastSeq = seq; batchState = s;
+    // which side the signed-in viewer is on (backer stake, seat), for the banner and the controls
+    if (identity.id) fetch(`/runs/${runId}/my-position`, { headers: identity.headers() }).then((r) => (r.ok ? r.json() : null)).then((p) => { if (p) myPos = p; }).catch(() => {});
     queue.push(...events);
     if (!playing && !queue.length) { snapshotHand(); state = s; render(); }   // nothing new: keep the clock/fuse honest
     else playNext();
@@ -1087,9 +1110,8 @@ async function seatAction(action) {
 }
 $("seatActions").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b) return;
-  if (b.id === "takeSeat") { if (!identity.id) { pendingAction = "seat"; return openFirstVisit(); } if (!identity.name) { pendingAction = "seat"; return openNamePrompt(); } seatAction("take"); }
+  if (b.id === "takeSeat") { if (!identity.id) { pendingAction = "seat"; return openFirstVisit(); } seatAction("take"); }
   if (b.id === "leaveSeat") seatAction("leave");
-  if (b.id === "editName") openNamePrompt();
   if (b.id === "copyLink") {
     if (await copyText(roomLink(runId))) { b.textContent = "Link copied"; setTimeout(() => { b.textContent = "Copy room link"; }, 2000); }
     else $("seatMsg").textContent = "Couldn't copy. The link is " + roomLink(runId);
@@ -1169,7 +1191,8 @@ function renderAccount() {
   const kind = treasury?.mode === "pollar" && identity.mode === "wallet" ? "Pollar wallet" : "Test funds";
   a.innerHTML = `<span class="who" title="${esc(identity.id)}">${esc(identity.label(identity.id, players))}</span>`
     + `<span class="bal">${fmt((balanceMicro ?? 0) / 1e6)}<small>${kind}</small></span>`
-    + `<button type="button" class="btn small yellow" id="addFundsBtn">Add funds</button>`;
+    + `<button type="button" class="btn small yellow" id="addFundsBtn">Add funds</button>`
+    + `<button type="button" class="btn text" id="changeName">Change name</button>`;
 }
 async function refreshBalance() { const b = await identity.balance().catch(() => null); if (b) { balanceMicro = b.balanceMicro; renderAccount(); updatePlantButton(); } }
 async function resumePending() {
@@ -1181,6 +1204,7 @@ document.addEventListener("click", async (e) => {
   const t = e.target.closest("button, a"); if (!t) return;
   if (t.id === "signInBtn") openFirstVisit();
   if (t.id === "addFundsBtn") openFunds();
+  if (t.id === "changeName") openNamePrompt();
   if (t.id === "justWatch" || t.id === "fundsClose") closePopovers();
   if (t.id === "guestBtn") {
     identity.choose("guest");

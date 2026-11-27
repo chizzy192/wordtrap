@@ -237,6 +237,51 @@ broadcast; finality writes `withdraw-sent`, a definite failure refunds (`refund:
 unknown outcome stays pending and is re-checked every 30 s and on startup. Before any debit the treasury must hold
 the USDC and the SOL for the fee, otherwise "Withdrawals are paused for a moment. Your balance is safe."
 
+**The funds page follows the money** (`apps/stake/src/App.tsx`). One `refreshAll()` is the only way state is reloaded:
+game balance with its credited signatures, a withdrawal still pending, the Pollar wallet balance and the activity list.
+It runs after every action, on window focus, every 5 s while a payment or withdrawal is pending and every 30 s
+otherwise; the header pills and the two tiles read the same state. A top-up keeps the button busy only while Pollar's
+window is open: once `sendPayment` returns a signature the button is free, a "Confirming your payment… $X" row shows,
+and the signature waits in `localStorage` (`wt.pending.<wallet>`) while `POST /api/v1/fiat/confirm` is asked every
+3 s for 90 s, then every 30 s. The credit shows as "Added $X to your game balance" for 6 s whether the confirm call or
+`refreshAll()` (the server's credited list) saw it first, and a stored signature the server lists as credited is
+dropped on every refresh, so a pending row never outlives its credit. A declined or closed Pollar window is "Payment
+cancelled. Nothing was sent." A cash-out applies the game balance from the server's answer at once, shows "Sent $X to
+your Pollar wallet" and reads the wallet again after 5 s and 15 s (its balance lags the chain); a 202 "pending"
+answer shows "Sending to your wallet…" and is re-asked by `requestId` (a lookup, never a second send) by the same
+polling. No flow reloads the page. The browser test for all of this runs against a mocked Pollar and a mock chain:
+`scripts/stake-mock-server.ts` (the server's RPC sees a transfer finalized 8 s after it was sent; the wallet balance
+moves 3 s after a cash-out) and the mocked `usePollar()` in `apps/stake/src/mockPollar.ts`, which exists only in a
+build made with `VITE_WT_MOCK_POLLAR=1`.
+
+## Runs survive a restart
+
+`apps/server/src/persist.ts`. Every change to a run (a feed event, a seat or room change, a plant, a back, a reveal,
+a settle) marks it dirty; a write-behind saver turns a burst into one upsert of the run's full serialisable state
+(`RunDump` in `apps/server/src/runs.ts`: the match dump with tiles, config, seed, fired words, planned hands and
+counters; the mock chain's backers, vault, traps and recorded words; the room's seats with their tokens, host and
+private flag; the event log with its sequence numbers, the snapshots the delayed feed serves, the start and finish
+times; and, beside it, this server's ledger slice for the run: mine owners, backers, settlement, plant and back refs,
+and whether the house Byte plays it) into Supabase table `runs(run_id, status, state jsonb, updated_at)`. A save never
+sits in the way of an answer (coalesced after 500 ms, last write wins, retried with backoff, flushed on SIGTERM and on
+`close()`); with the store down the API keeps answering and the save lands when the store is back. On startup every
+run updated in the last two hours is restored before anything else: live ones continue with the same runId, turn and
+API key, their watchers' `after` cursor still works, bots and the house Byte pick up again; finished ones stay
+answerable for two hours after they ended, then leave memory. The orphaned-stake refund on startup skips every restored
+run and refunds only stakes whose run truly cannot come back (a run on a real cluster, or one older than two hours).
+Without Supabase, runs live in memory as before.
+
+**One side per run.** A viewer who backed Byte in a run can never take a seat in it, and a seated player can never
+back it (`BACKER_NO_SEAT`, `SEATED_NO_BACK` in `apps/server/src/main.ts`, enforced on `/runs/:id/seat`,
+`/runs/:id/back-fiat` and quick play). `GET /runs/:id/my-position` says which side the viewer is on and why the other
+is closed; the side page shows "Watch the run" after backing and the board shows the backer's banner ("You backed Byte
+with $X. In the pool now $Y", live) with no planting controls. Anyone watches a public room without signing in.
+
+**Names.** A signed-in player's display name is the one they set once (`PUT /api/v1/profile`), else the Google name
+Pollar's profile carries (adopted on the first verified sign-in, trimmed to the name rule), else the short wallet
+address. Guests are asked once, right after choosing to play as a guest, and may skip. No action (seat, plant, back,
+join by code) ever asks for a name; "Change name" lives in each page's header panel.
+
 ## Daily decks from the web
 
 `apps/server/src/decks.ts` turns one page per source per day (`apps/server/config/deck-sources.json`: Wikipedia

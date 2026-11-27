@@ -1,7 +1,11 @@
 // Browser test for the funds page (/stake/). Needs a running server (arg 1) whose apps/stake build was made WITH a
 // VITE_POLLAR_PUBLISHABLE_KEY (any value: the SDK mounts and its login modal opens without a real key), headless Chrome,
 // and node 22+. Saves captures to docs/design_reference/captures/stake/ (arg 2). Exits 1 on any failed check.
-//   node scripts/browser-stake.mjs http://127.0.0.1:8802 docs/design_reference/captures/stake
+//   node scripts/browser-stake.mjs http://127.0.0.1:8802 docs/design_reference/captures/stake [http://127.0.0.1:8809]
+// Part D (only with the third argument, the mock chain of scripts/stake-mock-server.ts; the build then also needs
+//         VITE_WT_MOCK_POLLAR=1): add funds is credited 8 s after the send and the page shows success and both balances
+//         with no reload; a stale pending signature that is already credited is cleared on load; a cancelled payment
+//         restores the button; a withdrawal updates both balances with no reload; a "pending" withdrawal resolves.
 // Part A: the Pollar modal opened from the wallet button sits inside the viewport over a fixed dimmed backdrop, no svg or
 //         img inside it is wider than 200 px, focus is inside it, Escape and the X close it.
 // Part B: signed-out hero, empty-wallet and funded states (via ?demo= fixtures) at 1366x768 and 390x844, light and dark.
@@ -125,6 +129,107 @@ for (const theme of ["light", "dark"]) {
   check(sendCalls === 0 && confirmCalls === 0, `${name}: a forced click sends nothing (transfer calls ${sendCalls}, confirm calls ${confirmCalls})`);
   await shot(join(OUT, `${name}.png`), true);
   await send("Fetch.disable");
+}
+// ---------- Part D: the money moves and the page follows (mocked Pollar, server credits 8 s after send) ----------
+const MOCK = process.argv[4];
+if (!MOCK) log("Part D skipped: no mock chain url (third argument; see scripts/stake-mock-server.ts)");
+else {
+  await vp(1366, 768);
+  const post = (path, body = {}) => fetch(`${MOCK}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const stats = () => fetch(`${MOCK}/stats`).then((r) => r.json());
+  const st0 = await stats();
+  await post("/reset");
+  await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__wtPollarMock = ${JSON.stringify({ token: "mock-token", address: st0.player, chain: MOCK })};` });
+  const pill = (sel) => ev(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`);
+  const wallet = () => pill(".pill:not(.yellow) b"), game = () => pill(".pill.yellow b");
+  const tileGame = () => pill(".tile.yellow .v"), tileWallet = () => pill(".tiles .tile:not(.yellow) .v");
+  const row = (wt) => ev(`document.querySelector('[data-wt="${wt}"]')?.textContent ?? null`);
+  const addBtn = () => ev(`(() => { const b = [...document.querySelectorAll("button")].find(b => /^Add \\$5 to game$/.test(b.textContent)); return b ? { disabled: b.disabled, busy: b.getAttribute("aria-busy") } : null; })()`);
+  const clickAdd = () => ev(`(() => { const b = [...document.querySelectorAll("button")].find(b => /^Add \\$5 to game$/.test(b.textContent)); b.click(); return !!b; })()`);
+  const until = async (fn, ms) => { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await sleep(250); } };
+  const pendingKey = () => ev(`localStorage.getItem("wt.pending.${st0.player}")`);
+  const withdraw = async (amount) => {
+    await ev(`[...document.querySelectorAll("button")].find(b => b.textContent === "Withdraw").click()`); await sleep(300);
+    await ev(`(() => { const i = document.querySelector(".cashout input"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(i, ${JSON.stringify(amount)}); i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await sleep(200);
+    await ev(`[...document.querySelectorAll(".cashout button")].find(b => b.textContent.startsWith("Withdraw")).click()`);
+  };
+  const open = async () => { await goto(`${BASE}/stake/?theme=light`); await until(async () => (await wallet()) !== "…" && (await wallet()) !== null, 5000); await ev(`window.__wtAlive = 1`); };
+
+  { // D1: add $5; the credit arrives 8 s after the send; success and both balances with no reload
+    const name = "after-mock-add";
+    await open();
+    check((await wallet()) === "$20.00" && (await game()) === "$0.00", `${name}: starts at $20.00 in the wallet, $0.00 in the game (${await wallet()}, ${await game()})`);
+    check((await addBtn())?.disabled === false, `${name}: add button enabled`);
+    const t0 = Date.now();
+    await clickAdd();
+    const confirming = await until(() => row("confirming"), 4000);
+    check(confirming?.startsWith("Confirming your payment… $5.00") ?? false, `${name}: "Confirming your payment… $5.00" row (${confirming})`);
+    const b = await addBtn();
+    check(b && b.busy !== "true" && b.disabled === false, `${name}: button out of its loading state right after the send (${JSON.stringify(b)})`);
+    check((await pendingKey()) !== null, `${name}: the signature is kept in localStorage while pending`);
+    const funded = await until(() => row("funded"), 20000); const took = Date.now() - t0;
+    check(funded === "Added $5.00 to your game balance", `${name}: success row "${funded}" after ${took} ms`);
+    check(took >= 7000 && took < 16000, `${name}: credited by the 3 s polling once the chain finalized at 8 s (${took} ms)`);
+    check((await row("confirming")) === null, `${name}: the pending row is gone`);
+    const g = await until(async () => (await game()) === "$5.00" && (await tileGame()) === "$5.00", 4000);
+    check(!!g, `${name}: game balance $5.00 in the pill and the tile (${await game()}, ${await tileGame()})`);
+    const w = await until(async () => (await wallet()) === "$15.00" && (await tileWallet()) === "$15.00", 6000);
+    check(!!w, `${name}: wallet $15.00 in the pill and the tile (${await wallet()}, ${await tileWallet()})`);
+    check((await pendingKey()) === null, `${name}: the signature left localStorage`);
+    check((await ev(`window.__wtAlive`)) === 1, `${name}: no page reload`);
+    await shot(join(OUT, `${name}.png`), true);
+    check((await until(async () => (await row("funded")) === null, 9000)) !== null, `${name}: the success row goes away after 6 s`);
+  }
+  { // D2: a stale pending signature that is already credited is cleared on load
+    const name = "after-mock-stale";
+    const sig = (await stats()).visible[0];
+    await ev(`localStorage.setItem("wt.pending.${st0.player}", JSON.stringify([{ signature: ${JSON.stringify(sig)}, amount: 5, at: Date.now() - 600000 }]))`);
+    await open();
+    check((await until(async () => (await pendingKey()) === null, 5000)) !== null, `${name}: stale pending signature cleared on load`);
+    check((await row("confirming")) === null, `${name}: no "Confirming" row for a payment that is already credited`);
+    check((await game()) === "$5.00", `${name}: game balance still $5.00 (${await game()})`);
+  }
+  { // D3: cancel restores the button
+    const name = "after-mock-cancel";
+    await open();
+    const sends = (await stats()).sends;
+    await ev(`window.__wtPollarMock.cancelNext = true`);
+    await clickAdd();
+    const refused = await until(() => row("refused"), 4000);
+    check(refused === "Payment cancelled. Nothing was sent.", `${name}: "${refused}"`);
+    const b = await addBtn();
+    check(b && b.disabled === false && b.busy !== "true", `${name}: button back to normal (${JSON.stringify(b)})`);
+    check((await row("confirming")) === null && (await pendingKey()) === null, `${name}: nothing pending`);
+    check((await stats()).sends === sends, `${name}: nothing reached the chain`);
+    await shot(join(OUT, `${name}.png`), true);
+  }
+  { // D4: withdraw $2: the game balance comes from the response at once, the wallet follows, no reload
+    const name = "after-mock-withdraw";
+    await open();
+    await withdraw("2");
+    const sent = await until(() => row("withdrawn"), 6000);
+    check(sent === "Sent $2.00 to your Pollar wallet", `${name}: "${sent}"`);
+    check((await game()) === "$3.00" && (await tileGame()) === "$3.00", `${name}: game balance $3.00 at once (${await game()}, ${await tileGame()})`);
+    const w = await until(async () => (await wallet()) === "$17.00" && (await tileWallet()) === "$17.00", 9000);
+    check(!!w, `${name}: wallet $17.00 once the chain caught up (${await wallet()}, ${await tileWallet()})`);
+    check((await ev(`window.__wtAlive`)) === 1, `${name}: no page reload`);
+    await shot(join(OUT, `${name}.png`), true);
+  }
+  { // D5: a withdrawal the server answers "pending" (202) resolves through the 5 s polling
+    const name = "after-mock-withdraw-pending";
+    await open();
+    await post("/hold", { on: true });
+    await withdraw("1");
+    const waiting = await until(() => row("withdrawing"), 6000);
+    check(waiting?.startsWith("Sending to your wallet…") ?? false, `${name}: "${waiting}"`);
+    check((await game()) === "$2.00", `${name}: game balance $2.00 at once (${await game()})`);
+    await post("/hold", { on: false });   // the chain finalizes it; the server's sweep settles it
+    const sent = await until(() => row("withdrawn"), 12000);
+    check(sent === "Sent $1.00 to your Pollar wallet", `${name}: "${sent}" through the polling`);
+    const w = await until(async () => (await wallet()) === "$18.00", 9000);
+    check(!!w, `${name}: wallet $18.00 (${await wallet()})`);
+    check((await ev(`window.__wtAlive`)) === 1, `${name}: no page reload`);
+  }
 }
 log("page errors:", errors.length ? errors.slice(0, 8) : "none");
 check(errors.length === 0, "no page script errors");

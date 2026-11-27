@@ -39,10 +39,10 @@ test("stake: sections and wording, no signature box, errors through friendly()",
     assert.ok(app.includes(s), `wording: ${s}`);
   }
   assert.ok(app.includes('{`Add ${money(amt > 0 ? amt : 0)} to game`}'), "Add $n to game button");
-  assert.ok(app.includes("setFunding({ step: \"done\", text: `Added ${usd("), "success line");
+  assert.ok(app.includes("announce(`Added ${usd(creditedMicro / 1e6)} to your game balance`)"), "success line");
   assert.ok(!/transaction signature|confirmManual|Cash top-ups|Treasury: \{/.test(app), "signature box, manual confirm, roadmap and treasury sentences removed");
   assert.ok(!/plant\(|back-fiat|plant-fiat/.test(app), "no inline plant or back forms");
-  assert.ok(app.includes("throw new Error(friendly(j.error))") && app.includes('setFunding({ step: "refused", text: friendly(e.message) })'), "errors through friendly()");
+  assert.ok(app.includes("throw new Error(friendly(j.error), { cause: r.status })") && app.includes('setFunding({ step: "refused", text: friendly(e.message) })'), "errors through friendly()");
   assert.ok(app.includes("openWalletBalanceModal") && app.includes('data-wt="wallet"'), "our wallet button opens the SDK wallet modal");
   assert.ok(app.includes('useModalManners'), "Escape, focus trap and focus return for Pollar modals");
   // the server money endpoints are untouched
