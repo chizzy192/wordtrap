@@ -24,6 +24,7 @@ import { MemoryMoneyStore, SupabaseMoneyStore, bindWallet, refundOrphans, migrat
 import { SolanaTreasury, type TreasuryWallet } from "./treasury.ts";
 import { Withdrawals } from "./withdrawals.ts";
 import { setMockTreasury } from "./chain/mock.ts";
+import { DeckManager, FirecrawlClient, MemoryDeckStore, SupabaseDeckStore, loadSources, playable, type FirecrawlLike, type DeckStore, type DeckSource } from "./decks.ts";
 import { commitment, fromHex, toHex, normalizeWord, isMineable, proRata } from "@wordtrap/shared";
 import { MemoryProfileStore, validateName, shortAddress, type ProfileStore } from "./profiles.ts";
 import { RoomError } from "./rooms.ts";
@@ -78,6 +79,13 @@ export interface AppOptions {
   withdrawWaitMs?: number;
   /** Earlier treasury addresses whose deposits still count (default LEGACY_TREASURY_ADDRESSES). */
   legacyTreasuries?: string[];
+  /** Daily decks: the Firecrawl client (default from FIRECRAWL_API_KEY; `null` = no web decks), sources, store, today. */
+  firecrawl?: FirecrawlLike | null;
+  deckSources?: DeckSource[];
+  deckStore?: DeckStore;
+  deckToday?: () => string;
+  /** ADMIN_TOKEN for POST /api/v1/decks/refresh (default from the environment). */
+  adminToken?: string | null;
   /** Let the funds page bind the wallet address the SDK shows when Pollar's server side gives none (env
    *  ALLOW_CLIENT_WALLET_BINDING=1). Off by default: a client could bind another player's address first. */
   allowClientWalletBinding?: boolean;
@@ -185,6 +193,10 @@ export function createApp(o: AppOptions = {}): App {
   const HOUSE_MAX = 3, houseDelayMs = o.houseDelayMs ?? 2500, houseRuns = new Set<string>();
   const houseStop = new AbortController();                      // app.close() stops every house Byte
   const nameCache = new Map<string, string>();        // address -> display name, filled as profiles are read or written
+  // Daily decks from the web (Firecrawl → validated tiles → Supabase or memory), refreshed lazily when a run starts.
+  const firecrawl: FirecrawlLike | null = o.firecrawl === undefined ? (process.env.FIRECRAWL_API_KEY ? new FirecrawlClient(process.env.FIRECRAWL_API_KEY) : null) : o.firecrawl;
+  const decks = new DeckManager({ sources: o.deckSources ?? loadSources(), store: o.deckStore ?? (supa ? new SupabaseDeckStore(supa.db) : new MemoryDeckStore()), firecrawl, log: console.log, today: o.deckToday });
+  const adminToken = o.adminToken === undefined ? (process.env.ADMIN_TOKEN || null) : o.adminToken;
   const runs = new RunManager({
     makeChain,
     cfg: o.cfg,
@@ -192,6 +204,7 @@ export function createApp(o: AppOptions = {}): App {
     extraBackers: (id) => Object.keys(ledger.backersOf(id)).length,
     bots: o.bots ?? crowdOn,
     nameOf: (a) => nameCache.get(a) ?? shortAddress(a),
+    pickDeck: async () => { const d = await decks.pickForRun(); return d ? { tiles: playable(d), meta: { theme: d.theme, sourceUrl: d.sourceUrl, site: d.site, day: d.day } } : null; },
     onRun: (run: Run) => {
       // Fiat mines: when the treasury's trap fires, pay the viewer who owns it (idempotent per trap).
       run.chain.onTrapFired((e) => {
@@ -271,7 +284,14 @@ export function createApp(o: AppOptions = {}): App {
         const stakeBuild = await stakeBuildPollar();
         if (stakeBuild !== "configured") pollarMissing.push(`VITE_POLLAR_PUBLISHABLE_KEY (build time, apps/stake${stakeBuild === "not built" ? " not built" : ""})`);
         const storage = supa ? ((await supa.ping()) ? "supabase" : "supabase-unreachable") : "memory";
-        return json(res, 200, { ok: true, pollar: pollarMissing.length ? "missing" : "configured", pollarMissing, stakeBuild, storage, withdrawals: treasuryWallet ? "ready" : "not configured" });
+        return json(res, 200, { ok: true, pollar: pollarMissing.length ? "missing" : "configured", pollarMissing, stakeBuild, storage, withdrawals: treasuryWallet ? "ready" : "not configured", decks: await decks.status() });
+      }
+      if (p === "/api/v1/decks/refresh" && req.method === "POST") {
+        // for the operator: refresh today's decks now (one Firecrawl request per source per day still applies)
+        if (!adminToken) return json(res, 403, { error: "ADMIN_TOKEN is not configured on this server." });
+        if (String(req.headers["x-admin-token"] ?? "") !== adminToken) return json(res, 401, { error: "Admin token required." });
+        const r = await decks.refresh(true);
+        return json(res, 200, { ...r, decks: await decks.status(), today: (await decks.store.forDay(o.deckToday?.() ?? new Date().toISOString().slice(0, 10))).map((d) => ({ theme: d.theme, site: d.site, tiles: d.tiles.length })) });
       }
 
       // ---- lobby ----

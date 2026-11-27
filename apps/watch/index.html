@@ -139,6 +139,10 @@ header { display: flex; align-items: center; gap: calc(var(--gap) * .6); padding
 .right { grid-area: right; margin-top: var(--gap); }
 .foot { grid-area: foot; min-width: 0; margin-top: calc(var(--gap) * .8); }
 .tileno { color: var(--soft); font-weight: 500; }
+.deckline { color: var(--soft); font-size: .9em; margin: 2px 0 0; }
+.deckline b { color: var(--text); font-weight: 600; }
+.deckline a { color: var(--blue-text); margin-left: 6px; }
+.deckline[hidden] { display: none; }
 .strip { display: inline-block; max-width: 100%; margin: calc(var(--gap) * .4) 0 calc(var(--gap) * .5); padding: calc(var(--pad) * .7) calc(var(--pad) * .9); background: var(--yellow); color: var(--ink); border: calc(var(--lw) + 1px) solid var(--ink); box-shadow: calc(var(--sh) + 3px) calc(var(--sh) + 3px) 0 var(--hard); transform: rotate(-1deg); transform-origin: left center; }
 #prompt { font: 800 var(--prompt)/1.05 var(--cond); margin: 0; letter-spacing: -.3px; overflow-wrap: anywhere; }
 #need { color: var(--soft); margin-top: 6px; }
@@ -523,6 +527,7 @@ body.tight4 .fuselabel { margin-top: 0; font-size: .8em; }
   <div class="leftcol">
   <section class="left">
     <div class="tileno" id="tileNo">Tile — of —</div>
+    <p class="deckline" id="deckLine" hidden>Today's deck: <b id="deckTheme"></b><a id="deckSrc" href="#" target="_blank" rel="noreferrer">from <span id="deckSite"></span></a></p>
     <div class="strip" id="promptStrip"><h1 id="prompt">Waiting for a run to start</h1><span id="shieldTag" aria-hidden="true">Shielded</span></div>
     <div id="need">Byte will pick up its first hand when the run begins.</div>
     <div id="deciding" class="deciding" hidden>Byte is deciding</div>
@@ -770,6 +775,7 @@ function render() {
 
   const tile = s.tiles[s.position];
   $("tileNo").textContent = tile ? `Tile ${s.position + 1} of ${s.tiles.length}` : `All ${s.tiles.length} tiles done`;
+  if (s.deck?.theme) { $("deckTheme").textContent = s.deck.theme; $("deckSite").textContent = s.deck.site || "the web"; $("deckSrc").href = s.deck.sourceUrl || "#"; $("deckLine").hidden = false; } else $("deckLine").hidden = true;
   $("board").innerHTML = s.tiles.map((t, i) =>
     `<div class="seg ${t.cleared ? "done" : ""} ${i === s.position ? "here" : ""}" title="${esc(t.prompt)}"></div>`).join("") +
     `<div class="seg exit">Exit</div>`;

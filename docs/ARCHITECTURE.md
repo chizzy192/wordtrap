@@ -228,6 +228,22 @@ broadcast; finality writes `withdraw-sent`, a definite failure refunds (`refund:
 unknown outcome stays pending and is re-checked every 30 s and on startup. Before any debit the treasury must hold
 the USDC and the SOL for the fee, otherwise "Withdrawals are paused for a moment. Your balance is safe."
 
+## Daily decks from the web
+
+`apps/server/src/decks.ts` turns one page per source per day (`apps/server/config/deck-sources.json`: Wikipedia
+"On this day", the Main Page's "Did you know", NASA APOD) into 7 tiles in the built-in `Tile` shape through Firecrawl v2
+(`POST /v2/scrape` with `formats: [{ type: "json", schema, prompt }]`, so no other AI key is involved). Tiles are
+validated before anything is stored: single words of 3 to 10 letters, upper-cased, no duplicates in a deck, no word
+from its own clue, a blocklist, no tiles about people (a people-category clue or a common given name drops the
+tile), and no tile whose clue or words touch violence, death, disaster, crime, disease, politics or religion (a
+word list; the prompt also asks for neutral, playful categories only); a deck needs 7 surviving tiles. Only the theme, the source URL and the tiles are kept, in Supabase
+`decks(day, theme, source_url, tiles)` (unique on day + theme) or in memory. Refresh is lazy because the host has
+no scheduler: a run that finds no deck for today starts a background refresh (one in flight, three attempts a day,
+never blocking the run) and plays the newest stored deck, else the built-in one; `POST /api/v1/decks/refresh`
+(`x-admin-token`) refreshes on demand. The deck is chosen before the run exists, so before any seat, and is fixed
+for the run; `state.deck` names it and the board shows "Today's deck: <theme>" with a link to the source.
+`/healthz` reports `decks: today | stale | builtin`.
+
 ## Rooms and seats
 
 One room per run with four seats (`apps/server/src/rooms.ts`). A seat is a server-side record:

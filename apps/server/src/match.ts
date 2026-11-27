@@ -65,7 +65,7 @@ export class Match extends EventEmitter {
   private readonly extraBackers: () => number;
   private bonusesPaid = 0;
 
-  constructor(o: { matchId: string; callsign?: string; chain: Chain; wallet: AgentWallet; oracleUrl: string; cfg?: Partial<MatchConfig>; seed?: number; deck?: Tile[]; extraBackers?: () => number }) {
+  constructor(o: { matchId: string; callsign?: string; chain: Chain; wallet: AgentWallet; oracleUrl: string; cfg?: Partial<MatchConfig>; seed?: number; deck?: Tile[]; deckMeta?: { theme: string; sourceUrl: string; site: string; day: string }; extraBackers?: () => number }) {
     super();
     this.cfg = { ...DEFAULTS, ...o.cfg };
     this.chain = o.chain; this.wallet = o.wallet; this.oracleUrl = o.oracleUrl;
@@ -73,7 +73,7 @@ export class Match extends EventEmitter {
     this.seed = o.seed ?? (Date.now() >>> 0);
     this.tiles = o.deck ? o.deck.slice(0, this.cfg.tiles) : dealTiles(this.cfg.tiles, this.seed);
     this.state = {
-      matchId: o.matchId, callsign: o.callsign, treasury: toHex(this.chain.treasury().pubkey), status: "live", turn: 0, position: 0,
+      matchId: o.matchId, callsign: o.callsign, deck: o.deckMeta, treasury: toHex(this.chain.treasury().pubkey), status: "live", turn: 0, position: 0,
       tiles: this.tiles.map((t) => ({ prompt: t.prompt, cleared: false, needed: t.needed, played: [] })),
       hand: [], safe: null, safeCard: null, shielded: false, nextHand: null, nextSafeCard: null, nextPrompt: null, laterHand: null, fuse: this.cfg.fuse, fuseTotal: this.cfg.fuse, hint: null,
       spoken: [], challenged: [], traps: [], backerTotal: 0, trapTotal: 0,

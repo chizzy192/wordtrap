@@ -102,6 +102,8 @@ export interface BoardState {
   matchPda?: string;         // on-chain Game account (solana mode)
   treasury?: string;         // hex pubkey of the server treasury: the on-chain setter for fiat (Pollar) mines
   callsign?: string;         // Byte's callsign for this run
+  /** Today's deck when the run plays one from the web: theme, where it came from, which day. Absent for the built-in deck. */
+  deck?: { theme: string; sourceUrl: string; site: string; day: string };
   status: MatchStatus;
   turn: number;
   position: number;          // tile index Byte stands on

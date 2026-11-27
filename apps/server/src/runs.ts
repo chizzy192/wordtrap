@@ -4,6 +4,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { BoardState, FeedEvent } from "@wordtrap/shared";
 import type { Chain } from "./chain/types.ts";
+import type { Tile } from "./content.ts";
 import { Match, type MatchConfig } from "./match.ts";
 import { SimWallet, type AgentWallet } from "./wallet.ts";
 import { Room, type Seat } from "./rooms.ts";
@@ -32,6 +33,8 @@ export interface RunManagerOptions {
   bots?: boolean;
   /** Display name for an address (falls back to the short address). */
   nameOf?: (address: string) => string;
+  /** Today's deck for a new run (chosen before the run exists; the built-in deck when null). */
+  pickDeck?: () => Promise<{ tiles: Tile[]; meta: { theme: string; sourceUrl: string; site: string; day: string } } | null>;
 }
 
 export class RunManager {
@@ -43,9 +46,11 @@ export class RunManager {
     const runId = randomBytes(8).readBigUInt64BE().toString(36);
     const apiKey = randomBytes(16).toString("hex");
     const chain = await this.o.makeChain();
+    let picked: Awaited<ReturnType<NonNullable<RunManagerOptions["pickDeck"]>>> = null;
+    try { picked = (await this.o.pickDeck?.()) ?? null; } catch { picked = null; }   // a deck problem never stops a run
     const match = new Match({
       matchId: runId, callsign, chain, wallet: (this.o.makeWallet ?? (() => new SimWallet()))(),
-      oracleUrl: this.o.oracleUrl(runId), cfg: this.o.cfg, seed,
+      oracleUrl: this.o.oracleUrl(runId), cfg: this.o.cfg, seed, deck: picked?.tiles, deckMeta: picked?.meta,
       extraBackers: () => this.o.extraBackers?.(runId) ?? 0,
     });
     const run: Run = { id: runId, key: apiKey, match, chain, room: new Room(this.o.bots ?? false), events: [], history: [], seq: 0, startedAt: Date.now() };

@@ -3,7 +3,7 @@ import type { SupabaseLike } from "../src/store.ts";
 
 /** A fake Supabase: four tables, credit_deposit + apply_delta with the documented rules, and an offline switch. */
 export function fakeSupabase() {
-  const t = { players: [] as any[], balances: [] as any[], deposits: [] as any[], ledger: [] as any[] };
+  const t = { players: [] as any[], balances: [] as any[], deposits: [] as any[], ledger: [] as any[], decks: [] as any[] };
   let nextId = 1; const state = { offline: false, calls: [] as string[] };
   const fail = () => ({ data: null, error: { message: "TypeError: fetch failed" } });
   const bal = (u: string) => t.balances.find((b) => b.user_id === u);
@@ -42,7 +42,7 @@ export function fakeSupabase() {
         state.calls.push(`${op} ${table}`);
         if (state.offline) return Promise.resolve(fail()).then(res, rej);
         const rows: any[] = (t as any)[table];
-        if (op === "upsert") { const i = rows.findIndex((r) => r[conflict] === payload[conflict]); if (i >= 0) rows[i] = { ...rows[i], ...payload }; else rows.push({ ...payload }); return Promise.resolve({ data: null, error: null }).then(res, rej); }
+        if (op === "upsert") { const keys = conflict.split(",").map((k) => k.trim()); const i = rows.findIndex((r) => keys.every((k) => r[k] === payload[k])); if (i >= 0) rows[i] = { ...rows[i], ...payload }; else rows.push({ ...payload }); return Promise.resolve({ data: null, error: null }).then(res, rej); }
         let out = rows.filter((r) => filters.every((f) => f(r)));
         if (order) { const [k, asc] = order; out = [...out].sort((x, y) => (x[k] > y[k] ? 1 : -1) * (asc ? 1 : -1)); }
         out = out.slice(0, lim).map((r) => cols ? Object.fromEntries(cols.map((c) => [c, r[c]])) : r);
